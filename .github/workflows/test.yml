@@ -82,17 +82,27 @@ jobs:
               --agent "$agent" \
               --yes
             npx --yes skills@1.5.19 list --json | tee skills-list.json
-            python - <<'PY'
+            AGENT="$agent" PROJECT_DIR="$project" python - <<'PY'
           import json
+          import os
           from pathlib import Path
 
           listed = json.loads(Path("skills-list.json").read_text(encoding="utf-8"))
-          assert any(item["name"] == "supertoken-gpt-image-2" for item in listed), listed
+          matches = [item for item in listed if item["name"] == "supertoken-gpt-image-2"]
+          assert len(matches) == 1, listed
+          expected_root = ".agents" if os.environ["AGENT"] == "codex" else ".claude"
+          expected = (
+              Path(os.environ["PROJECT_DIR"])
+              / expected_root
+              / "skills"
+              / "supertoken-gpt-image-2"
+          )
+          assert Path(matches[0]["path"]).resolve() == expected.resolve(), matches[0]
+          assert (expected / "SKILL.md").is_file(), expected
           lock = json.loads(Path("skills-lock.json").read_text(encoding="utf-8"))
           entry = lock["skills"]["supertoken-gpt-image-2"]
           assert entry["sourceType"] == "local", entry
           PY
-            find -L . -path '*/supertoken-gpt-image-2/SKILL.md' -type f | grep -q .
           done
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
             for profile in codex shared; do
