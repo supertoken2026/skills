@@ -7,9 +7,11 @@ description: Use when generating or saving images through the SuperToken OpenAI-
 
 通过 SuperToken 兼容 OpenAI 的图片接口生成图片。默认模型是 `gpt-image-2-count`，也可以切换到 `gpt-image-2`。
 
+macOS 和 Linux 使用 `python3` 运行脚本；Windows 使用 `py -3`。输出路径应符合当前操作系统的路径格式。
+
 ## 使用前配置
 
-优先读取 `SUPERTOKEN_API_KEY`。如果环境变量中没有 Key，脚本会读取系统安全存储；在交互式终端首次运行时，脚本也会安全地提示输入。
+运行时先读取 `SUPERTOKEN_API_KEY`，再读取系统安全存储。若仍未找到 Key，交互式终端会以隐藏方式提示输入。
 
 需要单独配置时，运行当前 Skill 目录下的脚本：
 
@@ -24,19 +26,13 @@ python3 scripts/setup.py
 定位当前 `SKILL.md` 所在目录，并使用其中的 `scripts/generate_image.py`。调用格式：
 
 ```bash
-python3 scripts/generate_image.py \
-  --prompt "一只坐在阳光里的小猫" \
-  --output /tmp/supertoken-kitten.png
+python3 scripts/generate_image.py --prompt "一只坐在阳光里的小猫" --output ./supertoken-kitten.png
 ```
 
 常用参数：
 
 ```bash
-python3 scripts/generate_image.py \
-  --prompt "一只坐在阳光里的小猫，高清照片风格" \
-  --output /tmp/supertoken-kitten.png \
-  --size 1024x1024 \
-  --quality low
+python3 scripts/generate_image.py --prompt "一只坐在阳光里的小猫，高清照片风格" --output ./supertoken-kitten.png --size 1024x1024 --quality low
 ```
 
 - 使用 `--model gpt-image-2` 切换模型。
@@ -62,6 +58,8 @@ python3 scripts/generate_image.py \
 
 Use this Skill to generate images through the SuperToken OpenAI-compatible image API. It defaults to `gpt-image-2-count` and accepts `--model gpt-image-2` as an override.
 
+Run scripts with `python3` on macOS and Linux or `py -3` on Windows. Use an output path supported by the current operating system.
+
 ### Setup
 
 Read credentials from `SUPERTOKEN_API_KEY` first, then from the operating-system credential store. For explicit setup, resolve the directory containing this `SKILL.md` and run:
@@ -77,9 +75,7 @@ Never put a real API Key in documentation, commits, issues, or command examples.
 Run the bundled generator from the same Skill directory:
 
 ```bash
-python3 scripts/generate_image.py \
-  --prompt "A tiny fluffy kitten sitting in sunlight" \
-  --output /tmp/supertoken-kitten.png
+python3 scripts/generate_image.py --prompt "A tiny fluffy kitten sitting in sunlight" --output ./supertoken-kitten.png
 ```
 
 Use `--model gpt-image-2` for the alternate model. Send `--format`, `--background`, `--param`, and `--json-params` only when the user asks for those options.
