@@ -20,6 +20,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 import supertoken_config as config  # noqa: E402
 import generate_image as generator  # noqa: E402
+import setup as setup_script  # noqa: E402
 
 
 def generation_args(**overrides):
@@ -237,6 +238,26 @@ class GenerateImageErrorTests(unittest.TestCase):
             generator.write_raw_diagnostics(path, api_key.encode("utf-8"), api_key)
 
             self.assertNotIn(api_key, path.read_text(encoding="utf-8"))
+
+
+class SupertokenSetupTests(unittest.TestCase):
+    def test_setup_rejects_removed_profile_argument(self):
+        with self.assertRaises(SystemExit):
+            setup_script.parse_args(["--profile", "old-provider"])
+
+    def test_setup_saves_supertoken_config_and_key(self):
+        with patch.object(setup_script, "save_api_key", return_value="macos-keychain") as save_key:
+            with patch.object(setup_script, "save_config") as save_config:
+                code = setup_script.main(["--api-key", "test-key"])
+
+        self.assertEqual(code, 0)
+        save_key.assert_called_once_with("test-key", allow_plaintext=False)
+        save_config.assert_called_once_with(
+            {
+                "base_url": "https://api.supertoken.cc/image-wrapper/v1",
+                "model": "gpt-image-2-count",
+            }
+        )
 
 
 if __name__ == "__main__":
