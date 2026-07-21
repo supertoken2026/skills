@@ -95,15 +95,19 @@ jobs:
             find -L . -path '*/supertoken-gpt-image-2/SKILL.md' -type f | grep -q .
           done
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            for agent in codex claude-code; do
-              project="$RUNNER_TEMP/remote-${agent}-project"
+            for profile in codex shared; do
+              project="$RUNNER_TEMP/remote-${profile}-project"
               mkdir -p "$project"
+              agents=(codex)
+              if [[ "$profile" == "shared" ]]; then
+                agents=(codex claude-code)
+              fi
               cd "$project"
               npx --yes skills@1.5.19 add "supertoken2026/skills#main" \
                 --skill supertoken-gpt-image-2 \
-                --agent "$agent" \
+                --agent "${agents[@]}" \
                 --yes
-              npx --yes skills@1.5.19 list --json | tee skills-list.json
+              npx --yes skills@1.5.19 list --json > skills-list.json
               python - <<'PY'
           import json
           from pathlib import Path
@@ -117,8 +121,23 @@ jobs:
           assert entry["ref"] == "main", entry
           assert entry["skillPath"] == "skills/supertoken-gpt-image-2/SKILL.md", entry
           PY
-              skill_file="$(find -L . -path '*/supertoken-gpt-image-2/SKILL.md' -type f | head -n 1)"
-              test -n "$skill_file"
+              skill_dir="$(python - <<'PY'
+          import json
+          from pathlib import Path
+
+          listed = json.loads(Path("skills-list.json").read_text(encoding="utf-8"))
+          matches = [item for item in listed if item["name"] == "supertoken-gpt-image-2"]
+          assert len(matches) == 1, listed
+          print(Path(matches[0]["path"]).resolve())
+          PY
+              )"
+              skill_file="$skill_dir/SKILL.md"
+              test -f "$skill_file"
+              if [[ "$profile" == "shared" ]]; then
+                claude_dir="$project/.claude/skills/supertoken-gpt-image-2"
+                test -L "$claude_dir"
+                test "$(realpath "$claude_dir")" = "$skill_dir"
+              fi
               before="$(sha256sum "$skill_file" | cut -d ' ' -f 1)"
               printf '\n<!-- update-smoke -->\n' >> "$skill_file"
               mutated="$(sha256sum "$skill_file" | cut -d ' ' -f 1)"
@@ -126,5 +145,73 @@ jobs:
               npx --yes skills@1.5.19 update -p -y supertoken-gpt-image-2
               after="$(sha256sum "$skill_file" | cut -d ' ' -f 1)"
               test "$before" = "$after"
+              if [[ "$profile" == "shared" ]]; then
+                test "$(sha256sum "$claude_dir/SKILL.md" | cut -d ' ' -f 1)" = "$before"
+              fi
+            done
+            mark_global_update_available() {
+              HOME_DIR="$1" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["HOME_DIR"]) / ".agents" / ".skill-lock.json"
+          lock = json.loads(path.read_text(encoding="utf-8"))
+          lock["skills"]["supertoken-gpt-image-2"]["skillFolderHash"] = "0" * 40
+          path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
+          PY
+            }
+            for profile in codex shared; do
+              home="$RUNNER_TEMP/global-${profile}-home"
+              project="$RUNNER_TEMP/global-${profile}-project"
+              neutral="$RUNNER_TEMP/global-${profile}-neutral"
+              mkdir -p "$home" "$project" "$neutral"
+              agents=(codex)
+              if [[ "$profile" == "shared" ]]; then
+                agents=(codex claude-code)
+              fi
+              cd "$project"
+              HOME="$home" npx --yes skills@1.5.19 add "supertoken2026/skills" \
+                --skill supertoken-gpt-image-2 \
+                --agent "${agents[@]}" \
+                --global \
+                --yes
+              HOME="$home" npx --yes skills@1.5.19 list -g --json > skills-list.json
+              skill_dir="$(python - <<'PY'
+          import json
+          from pathlib import Path
+
+          listed = json.loads(Path("skills-list.json").read_text(encoding="utf-8"))
+          matches = [item for item in listed if item["name"] == "supertoken-gpt-image-2"]
+          assert len(matches) == 1, listed
+          print(Path(matches[0]["path"]).resolve())
+          PY
+              )"
+              skill_file="$skill_dir/SKILL.md"
+              test -f "$skill_file"
+              if [[ "$profile" == "shared" ]]; then
+                claude_dir="$home/.claude/skills/supertoken-gpt-image-2"
+                test -L "$claude_dir"
+                test "$(realpath "$claude_dir")" = "$skill_dir"
+              fi
+              before="$(sha256sum "$skill_file" | cut -d ' ' -f 1)"
+              printf '\n<!-- global-update-smoke -->\n' >> "$skill_file"
+              mutated="$(sha256sum "$skill_file" | cut -d ' ' -f 1)"
+              test "$before" != "$mutated"
+              mark_global_update_available "$home"
+              HOME="$home" npx --yes skills@1.5.19 update -g -y supertoken-gpt-image-2
+              after="$(sha256sum "$skill_file" | cut -d ' ' -f 1)"
+              test "$before" = "$after"
+              printf '\n<!-- default-update-smoke -->\n' >> "$skill_file"
+              mutated="$(sha256sum "$skill_file" | cut -d ' ' -f 1)"
+              test "$before" != "$mutated"
+              mark_global_update_available "$home"
+              cd "$neutral"
+              HOME="$home" npx --yes skills@1.5.19 update -y supertoken-gpt-image-2
+              after="$(sha256sum "$skill_file" | cut -d ' ' -f 1)"
+              test "$before" = "$after"
+              if [[ "$profile" == "shared" ]]; then
+                test "$(sha256sum "$claude_dir/SKILL.md" | cut -d ' ' -f 1)" = "$before"
+              fi
             done
           fi
