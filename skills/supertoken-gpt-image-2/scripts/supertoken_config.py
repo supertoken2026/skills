@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import base64
+import binascii
 import ctypes
 import ctypes.wintypes
 import json
@@ -259,11 +260,22 @@ def _windows_read_key():
     path = windows_dpapi_path()
     if not path.exists():
         return None
-    encrypted = base64.b64decode(path.read_bytes())
-    plain = _windows_unprotect(encrypted)
+    try:
+        encrypted = base64.b64decode(path.read_bytes(), validate=True)
+    except OSError as exc:
+        raise ConfigError(f"无法读取 DPAPI 凭据文件：{path}。") from exc
+    except (binascii.Error, ValueError) as exc:
+        raise ConfigError(f"DPAPI 凭据文件格式无效：{path}。请删除该文件后重新配置。") from exc
+    try:
+        plain = _windows_unprotect(encrypted)
+    except OSError as exc:
+        raise ConfigError(f"无法解密 DPAPI 凭据文件：{path}。请删除该文件后重新配置。") from exc
     if not plain:
         return None
-    return plain.decode("utf-8")
+    try:
+        return plain.decode("utf-8")
+    except UnicodeError as exc:
+        raise ConfigError(f"DPAPI 凭据文件格式无效：{path}。请删除该文件后重新配置。") from exc
 
 
 def _windows_write_key(api_key):

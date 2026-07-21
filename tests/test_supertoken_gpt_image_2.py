@@ -173,6 +173,59 @@ class SupertokenConfigTests(unittest.TestCase):
             self.assertIn("配置文件格式无效", stderr.getvalue())
             self.assertNotIn("Traceback", stderr.getvalue())
 
+    def test_main_reports_invalid_dpapi_credentials_without_traceback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "credentials.dpapi"
+            path.write_bytes(b"not-valid-base64%%")
+            stderr = io.StringIO()
+            environment = {
+                config.CONFIG_DIR_ENV: temp_dir,
+                config.API_KEY_ENV: "",
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                with patch.object(config.platform, "system", return_value="Windows"):
+                    with contextlib.redirect_stderr(stderr):
+                        code = generator.main(
+                            [
+                                "--prompt",
+                                "一只坐在阳光里的小猫",
+                                "--output",
+                                str(Path(temp_dir) / "image.png"),
+                            ]
+                        )
+
+            self.assertEqual(code, 2)
+            self.assertIn("DPAPI 凭据文件格式无效", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertNotIn("Incorrect padding", stderr.getvalue())
+
+    def test_main_reports_invalid_dpapi_plaintext_without_traceback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "credentials.dpapi"
+            path.write_bytes(base64.b64encode(b"encrypted"))
+            stderr = io.StringIO()
+            environment = {
+                config.CONFIG_DIR_ENV: temp_dir,
+                config.API_KEY_ENV: "",
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                with patch.object(config.platform, "system", return_value="Windows"):
+                    with patch.object(config, "_windows_unprotect", return_value=b"\xff"):
+                        with contextlib.redirect_stderr(stderr):
+                            code = generator.main(
+                                [
+                                    "--prompt",
+                                    "一只坐在阳光里的小猫",
+                                    "--output",
+                                    str(Path(temp_dir) / "image.png"),
+                                ]
+                            )
+
+            self.assertEqual(code, 2)
+            self.assertIn("DPAPI 凭据文件格式无效", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertNotIn("UnicodeDecodeError", stderr.getvalue())
+
 
 class GenerateImagePayloadTests(unittest.TestCase):
     def test_resolve_model_uses_default_model(self):
