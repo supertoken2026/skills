@@ -120,6 +120,9 @@ jobs:
               skill_file="$(find -L . -path '*/supertoken-gpt-image-2/SKILL.md' -type f | head -n 1)"
               test -n "$skill_file"
               before="$(sha256sum "$skill_file" | cut -d ' ' -f 1)"
+              printf '\n<!-- update-smoke -->\n' >> "$skill_file"
+              mutated="$(sha256sum "$skill_file" | cut -d ' ' -f 1)"
+              test "$before" != "$mutated"
               npx --yes skills@1.5.19 update -p -y supertoken-gpt-image-2
               after="$(sha256sum "$skill_file" | cut -d ' ' -f 1)"
               test "$before" = "$after"
