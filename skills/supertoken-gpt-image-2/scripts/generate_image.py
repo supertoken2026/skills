@@ -215,15 +215,15 @@ def first_run_setup(args, current):
 
 def main(argv=None):
     args = parse_args(argv)
-    current = load_config()
     prompted_api_key = None
     try:
+        current = load_config()
         current, prompted_api_key = first_run_setup(args, current)
+        api_key = args.api_key or prompted_api_key or get_api_key()
     except ConfigError as exc:
         print(str(exc), file=sys.stderr)
         return 2
 
-    api_key = args.api_key or prompted_api_key or get_api_key()
     if not api_key:
         print(
             "没有找到 SuperToken API Key。请设置 SUPERTOKEN_API_KEY，或运行 setup.py。",

@@ -25,6 +25,22 @@ class ConfigError(RuntimeError):
     pass
 
 
+def _read_json_object(path, label):
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeError as exc:
+        raise ConfigError(f"{label}格式无效：{path}。请删除该文件后重新配置。") from exc
+    except OSError as exc:
+        raise ConfigError(f"无法读取{label}：{path}。") from exc
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"{label}格式无效：{path}。请删除该文件后重新配置。") from exc
+    if not isinstance(value, dict):
+        raise ConfigError(f"{label}格式无效：{path}。请删除该文件后重新配置。")
+    return value
+
+
 def config_dir():
     override = os.environ.get(CONFIG_DIR_ENV)
     if override:
@@ -61,7 +77,7 @@ def load_config():
     path = config_path()
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _read_json_object(path, "配置文件")
 
 
 def save_config(config):
@@ -264,7 +280,7 @@ def _plaintext_read_key():
     path = plaintext_credentials_path()
     if not path.exists():
         return None
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = _read_json_object(path, "凭据文件")
     return data.get("api_key")
 
 

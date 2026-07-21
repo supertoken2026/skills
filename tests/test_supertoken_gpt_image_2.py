@@ -97,6 +97,82 @@ class SupertokenConfigTests(unittest.TestCase):
                     with patch.object(config.shutil, "which", return_value=None):
                         self.assertIsNone(config.get_api_key())
 
+    def test_load_config_rejects_malformed_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text("{", encoding="utf-8")
+            with patch.dict(os.environ, {config.CONFIG_DIR_ENV: temp_dir}):
+                with self.assertRaisesRegex(config.ConfigError, "配置文件格式无效"):
+                    config.load_config()
+
+    def test_load_config_rejects_non_object_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text("[]", encoding="utf-8")
+            with patch.dict(os.environ, {config.CONFIG_DIR_ENV: temp_dir}):
+                with self.assertRaisesRegex(config.ConfigError, "配置文件格式无效"):
+                    config.load_config()
+
+    def test_load_config_rejects_invalid_utf8(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_bytes(b"\xff")
+            with patch.dict(os.environ, {config.CONFIG_DIR_ENV: temp_dir}):
+                with self.assertRaisesRegex(config.ConfigError, "配置文件格式无效"):
+                    config.load_config()
+
+    def test_get_api_key_rejects_malformed_plaintext_credentials(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "credentials.json"
+            path.write_text("{", encoding="utf-8")
+            environment = {
+                config.CONFIG_DIR_ENV: temp_dir,
+                config.API_KEY_ENV: "",
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                with patch.object(config.platform, "system", return_value="Linux"):
+                    with patch.object(config.shutil, "which", return_value=None):
+                        with self.assertRaisesRegex(config.ConfigError, "凭据文件格式无效"):
+                            config.get_api_key()
+
+    def test_get_api_key_rejects_non_object_plaintext_credentials(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "credentials.json"
+            path.write_text("[]", encoding="utf-8")
+            environment = {
+                config.CONFIG_DIR_ENV: temp_dir,
+                config.API_KEY_ENV: "",
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                with patch.object(config.platform, "system", return_value="Linux"):
+                    with patch.object(config.shutil, "which", return_value=None):
+                        with self.assertRaisesRegex(config.ConfigError, "凭据文件格式无效"):
+                            config.get_api_key()
+
+    def test_main_reports_invalid_config_without_traceback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text("{", encoding="utf-8")
+            stderr = io.StringIO()
+            environment = {
+                config.CONFIG_DIR_ENV: temp_dir,
+                config.API_KEY_ENV: "test-key",
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                with contextlib.redirect_stderr(stderr):
+                    code = generator.main(
+                        [
+                            "--prompt",
+                            "一只坐在阳光里的小猫",
+                            "--output",
+                            str(Path(temp_dir) / "image.png"),
+                        ]
+                    )
+
+            self.assertEqual(code, 2)
+            self.assertIn("配置文件格式无效", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+
 
 class GenerateImagePayloadTests(unittest.TestCase):
     def test_resolve_model_uses_default_model(self):
