@@ -1,0 +1,127 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python-tests:
+    name: python-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Compile Python files
+        run: python -m compileall skills tests
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+      - name: Reject legacy brand strings
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          forbidden = ["uo" + "uo", "uo" + "uo.cloud", "UO" + "UO_", "azure-gpt-image-2"]
+          excluded = {".git", "__pycache__"}
+          matches = []
+          for path in Path(".").rglob("*"):
+              if not path.is_file() or excluded.intersection(path.parts):
+                  continue
+              try:
+                  text = path.read_text(encoding="utf-8")
+              except UnicodeDecodeError:
+                  continue
+              for value in forbidden:
+                  if value.lower() in text.lower():
+                      matches.append(f"{path}: {value}")
+          if matches:
+              raise SystemExit("\n".join(matches))
+          print("legacy brand scan passed")
+          PY
+
+  distribution:
+    name: distribution
+    needs: python-tests
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.20.0"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install and update for Codex and Claude Code
+        shell: bash
+        run: |
+          set -euo pipefail
+          for agent in codex claude-code; do
+            project="$RUNNER_TEMP/local-${agent}-project"
+            mkdir -p "$project"
+            cd "$project"
+            npx --yes skills@1.5.19 add "$GITHUB_WORKSPACE" \
+              --skill supertoken-gpt-image-2 \
+              --agent "$agent" \
+              --yes
+            npx --yes skills@1.5.19 list --json | tee skills-list.json
+            python - <<'PY'
+          import json
+          from pathlib import Path
+
+          listed = json.loads(Path("skills-list.json").read_text(encoding="utf-8"))
+          assert any(item["name"] == "supertoken-gpt-image-2" for item in listed), listed
+          lock = json.loads(Path("skills-lock.json").read_text(encoding="utf-8"))
+          entry = lock["skills"]["supertoken-gpt-image-2"]
+          assert entry["sourceType"] == "local", entry
+          PY
+            find -L . -path '*/supertoken-gpt-image-2/SKILL.md' -type f | grep -q .
+          done
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            for agent in codex claude-code; do
+              project="$RUNNER_TEMP/remote-${agent}-project"
+              mkdir -p "$project"
+              cd "$project"
+              npx --yes skills@1.5.19 add "supertoken2026/skills#main" \
+                --skill supertoken-gpt-image-2 \
+                --agent "$agent" \
+                --yes
+              npx --yes skills@1.5.19 list --json | tee skills-list.json
+              python - <<'PY'
+          import json
+          from pathlib import Path
+
+          listed = json.loads(Path("skills-list.json").read_text(encoding="utf-8"))
+          assert any(item["name"] == "supertoken-gpt-image-2" for item in listed), listed
+          lock = json.loads(Path("skills-lock.json").read_text(encoding="utf-8"))
+          entry = lock["skills"]["supertoken-gpt-image-2"]
+          assert entry["source"] == "supertoken2026/skills", entry
+          assert entry["sourceType"] == "github", entry
+          assert entry["ref"] == "main", entry
+          assert entry["skillPath"] == "skills/supertoken-gpt-image-2/SKILL.md", entry
+          PY
+              skill_file="$(find -L . -path '*/supertoken-gpt-image-2/SKILL.md' -type f | head -n 1)"
+              test -n "$skill_file"
+              before="$(sha256sum "$skill_file" | cut -d ' ' -f 1)"
+              npx --yes skills@1.5.19 update -p -y supertoken-gpt-image-2
+              after="$(sha256sum "$skill_file" | cut -d ' ' -f 1)"
+              test "$before" = "$after"
+            done
+          fi
