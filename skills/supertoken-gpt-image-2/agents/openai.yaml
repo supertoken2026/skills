@@ -1,0 +1,4 @@
+interface:
+  display_name: "SuperToken GPT Image 2"
+  short_description: "Generate images with gpt-image-2-count"
+  default_prompt: "Use $supertoken-gpt-image-2 to generate a 1024x1024 image of a tiny fluffy kitten sitting in sunlight."

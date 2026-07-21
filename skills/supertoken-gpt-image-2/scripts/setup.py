@@ -20,11 +20,11 @@ class ChineseArgumentParser(argparse.ArgumentParser):
 
 def parse_args(argv=None):
     parser = ChineseArgumentParser(description="配置 SuperToken GPT Image 2。")
-    parser.add_argument("--api-key", help="SuperToken API Key；省略时安全提示输入。")
+    parser.add_argument("--api-key", help="SuperToken API Key；未提供时会安全提示输入。")
     parser.add_argument(
         "--base-url",
         default=DEFAULT_BASE_URL,
-        help="SuperToken OpenAI-compatible 图片 API 基址。",
+        help="SuperToken 兼容 OpenAI 的图片 API 基址。",
     )
     parser.add_argument(
         "--allow-plaintext-key-store",

@@ -29,7 +29,7 @@ class GenerationError(RuntimeError):
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="通过 SuperToken GPT Image 2 生成图片。")
+    parser = argparse.ArgumentParser(description="使用 SuperToken GPT Image 2 生成图片。")
     parser.add_argument("--prompt", required=True, help="图片提示词。")
     parser.add_argument("--output", required=True, help="生成图片的保存路径。")
     parser.add_argument("--api-key", help="仅在本次运行中使用的 SuperToken API Key，不保存。")
@@ -199,7 +199,7 @@ def first_run_setup(args, current):
 
     api_key = args.api_key or get_api_key()
     if not api_key:
-        print("首次使用需要配置 SuperToken GPT Image 2。", file=sys.stderr)
+        print("首次使用时，需要先配置 SuperToken GPT Image 2。", file=sys.stderr)
         api_key = getpass.getpass("SuperToken API Key：").strip()
         if not api_key:
             raise ConfigError("需要 SuperToken API Key。")
