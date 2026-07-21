@@ -1,4 +1,6 @@
 import base64
+import contextlib
+import io
 import json
 import os
 import stat
@@ -242,13 +244,25 @@ class GenerateImageErrorTests(unittest.TestCase):
 
 class SupertokenSetupTests(unittest.TestCase):
     def test_setup_rejects_removed_profile_argument(self):
-        with self.assertRaises(SystemExit):
-            setup_script.parse_args(["--profile", "old-provider"])
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as exc:
+                setup_script.parse_args(["--profile", "old-provider"])
+
+        self.assertEqual(exc.exception.code, 2)
+        self.assertEqual(stderr.getvalue(), "参数错误：请使用 --help 查看可用参数。\n")
+        self.assertNotIn("unrecognized arguments", stderr.getvalue())
 
     def test_setup_saves_supertoken_config_and_key(self):
-        with patch.object(setup_script, "save_api_key", return_value="macos-keychain") as save_key:
-            with patch.object(setup_script, "save_config") as save_config:
-                code = setup_script.main(["--api-key", "test-key"])
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with contextlib.redirect_stdout(stdout):
+            with contextlib.redirect_stderr(stderr):
+                with patch.object(setup_script, "save_api_key", return_value="macos-keychain") as save_key:
+                    with patch.object(setup_script, "save_config") as save_config:
+                        code = setup_script.main(["--api-key", "test-key"])
 
         self.assertEqual(code, 0)
         save_key.assert_called_once_with("test-key", allow_plaintext=False)
@@ -258,6 +272,15 @@ class SupertokenSetupTests(unittest.TestCase):
                 "model": "gpt-image-2-count",
             }
         )
+        self.assertEqual(
+            stdout.getvalue(),
+            "配置已保存到：/Users/bojack/Library/Application Support/supertoken/gpt-image-2/config.json\n"
+            "API Key 已保存到：macos-keychain\n"
+            "默认模型：gpt-image-2-count\n",
+        )
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertNotIn("test-key", stdout.getvalue())
+        self.assertNotIn("test-key", stderr.getvalue())
 
 
 if __name__ == "__main__":

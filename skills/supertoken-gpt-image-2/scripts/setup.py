@@ -13,8 +13,13 @@ from supertoken_config import (
 )
 
 
+class ChineseArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.exit(2, "参数错误：请使用 --help 查看可用参数。\n")
+
+
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="配置 SuperToken GPT Image 2。")
+    parser = ChineseArgumentParser(description="配置 SuperToken GPT Image 2。")
     parser.add_argument("--api-key", help="SuperToken API Key；省略时安全提示输入。")
     parser.add_argument(
         "--base-url",
