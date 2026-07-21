@@ -260,9 +260,10 @@ class SupertokenSetupTests(unittest.TestCase):
 
         with contextlib.redirect_stdout(stdout):
             with contextlib.redirect_stderr(stderr):
-                with patch.object(setup_script, "save_api_key", return_value="macos-keychain") as save_key:
-                    with patch.object(setup_script, "save_config") as save_config:
-                        code = setup_script.main(["--api-key", "test-key"])
+                with patch.object(setup_script, "config_path", return_value="/portable/config.json"):
+                    with patch.object(setup_script, "save_api_key", return_value="macos-keychain") as save_key:
+                        with patch.object(setup_script, "save_config") as save_config:
+                            code = setup_script.main(["--api-key", "test-key"])
 
         self.assertEqual(code, 0)
         save_key.assert_called_once_with("test-key", allow_plaintext=False)
@@ -274,7 +275,7 @@ class SupertokenSetupTests(unittest.TestCase):
         )
         self.assertEqual(
             stdout.getvalue(),
-            "配置已保存到：/Users/bojack/Library/Application Support/supertoken/gpt-image-2/config.json\n"
+            "配置已保存到：/portable/config.json\n"
             "API Key 已保存到：macos-keychain\n"
             "默认模型：gpt-image-2-count\n",
         )
