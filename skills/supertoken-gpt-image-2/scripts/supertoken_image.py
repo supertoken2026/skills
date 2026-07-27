@@ -620,9 +620,11 @@ def validate_task_response(task, context, expected_id=None, secrets=()):
             or not 0 <= progress <= 100
         ):
             raise api.ApiResponseError(f"{context}中的任务进度无效。")
-    if status == "failed" or "error" in task:
+    error = task.get("error")
+    if status == "failed" or error is not None:
         task_error_summary(task, context, secrets)
-    if "result" in task and not isinstance(task["result"], dict):
+    result = task.get("result")
+    if result is not None and not isinstance(result, dict):
         raise api.ApiResponseError(f"{context}中的 result 格式无效。")
     return task
 

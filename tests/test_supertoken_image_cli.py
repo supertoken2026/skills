@@ -964,6 +964,35 @@ class AsyncTaskTests(unittest.TestCase):
             call.args[0] != cli.RESOURCE_KEY for call in get_key.call_args_list
         ))
 
+    def test_async_create_accepts_documented_null_result_and_error(self):
+        response = api_response({
+            "id": "task_documented_create",
+            "object": "image.task",
+            "model": "gpt-image-2-count",
+            "operation": "generation",
+            "status": "queued",
+            "progress": 0,
+            "result": None,
+            "error": None,
+            "usage": {},
+        }, 202)
+        with patch.object(cli.api, "request_json", return_value=response):
+            code, stdout, stderr = run_cli([
+                "generate", "--async", "--prompt", "cat",
+                "--idempotency-key", "documented-create",
+            ], {config.API_KEY_ENV: "model-key"})
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout), {
+            "mode": "async",
+            "operation": "generation",
+            "model": "gpt-image-2-count",
+            "task_id": "task_documented_create",
+            "status": "queued",
+            "progress": 0,
+            "idempotency_key": "documented-create",
+        })
+
     def test_create_rejects_malformed_task_id_without_reporting_it(self):
         for malformed_id in ("bad/sk-model123456", "task_sk-serversecret123"):
             with self.subTest(malformed_id=malformed_id):
@@ -1319,6 +1348,38 @@ class AsyncTaskTests(unittest.TestCase):
         self.assertNotIn(server_id, stdout)
         self.assertNotIn(server_id, stderr)
 
+    def test_wait_accepts_documented_nullable_task_fields(self):
+        encoded = base64.b64encode(PNG_BYTES).decode("ascii")
+        responses = [
+            api_response({
+                "id": "task_documented_wait",
+                "status": "queued",
+                "progress": 0,
+                "result": None,
+                "error": None,
+            }, headers={"Retry-After": "2"}),
+            api_response({
+                "id": "task_documented_wait",
+                "status": "succeeded",
+                "progress": 100,
+                "result": {"images": [{"b64_json": encoded}]},
+                "error": None,
+            }),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "result.png"
+            with patch.object(cli.api, "request_json", side_effect=responses):
+                defaults = (2, lambda _seconds: None, cli.time.monotonic)
+                with patch.object(cli.poll_task, "__defaults__", defaults):
+                    code, stdout, stderr = run_cli([
+                        "wait", "task_documented_wait",
+                        "--output", str(output),
+                    ], {config.RESOURCE_API_KEY_ENV: "resource-key"})
+
+            self.assertEqual(code, 0, stderr)
+            self.assertEqual(json.loads(stdout)["status"], "succeeded")
+            self.assertEqual(output.read_bytes(), PNG_BYTES)
+
     def test_task_stdout_is_a_fixed_allowlist_summary(self):
         secret = "sk-serversecret123"
         response = api_response({
@@ -1345,6 +1406,27 @@ class AsyncTaskTests(unittest.TestCase):
         })
         for value in (secret, "signed-secret", "base64-secret"):
             self.assertNotIn(value, stdout)
+
+    def test_task_query_accepts_documented_null_error(self):
+        response = api_response({
+            "id": "task_documented_query",
+            "status": "succeeded",
+            "progress": 100,
+            "result": {"images": []},
+            "error": None,
+        })
+        with patch.object(cli.api, "request_json", return_value=response):
+            code, stdout, stderr = run_cli(
+                ["task", "task_documented_query"],
+                {config.RESOURCE_API_KEY_ENV: "resource-key"},
+            )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout), {
+            "task_id": "task_documented_query",
+            "status": "succeeded",
+            "progress": 100,
+        })
 
     def test_task_failed_stdout_contains_only_sanitized_error_summary(self):
         response = api_response({
