@@ -2,7 +2,7 @@
 import argparse
 import sys
 
-from supertoken_image import main as image_main
+from supertoken_image import configure_console_encoding, main as image_main
 
 
 def parse_args(argv=None):
@@ -37,6 +37,7 @@ def parse_args(argv=None):
 
 
 def main(argv=None):
+    configure_console_encoding()
     arguments = list(sys.argv[1:] if argv is None else argv)
     parse_args(arguments)
     if "--timeout" not in arguments and not any(
