@@ -47,7 +47,7 @@ def add_image_options(parser, include_images=False):
     parser.add_argument("--json-params")
     parser.add_argument("--raw-json")
     parser.add_argument("--timeout", type=int, default=300)
-    parser.add_argument("--wait-timeout", type=int, default=900)
+    parser.add_argument("--wait-timeout", type=int)
     parser.add_argument("--async", dest="async_mode", action="store_true")
     parser.add_argument("--wait", action="store_true")
     parser.add_argument("--idempotency-key")
@@ -107,7 +107,46 @@ def validate_mode_args(args):
     if not 1 <= args.count <= 10:
         raise api.ApiUsageError("--n 必须在 1 到 10 之间。")
     if not args.async_mode:
+        unsupported = [
+            name for name, value in (
+                ("--resource-api-key", args.resource_api_key),
+                ("--wait-timeout", args.wait_timeout),
+                ("--idempotency-key", args.idempotency_key),
+                ("--output-compression", args.output_compression),
+                ("--client-reference-id", args.client_reference_id),
+                ("--metadata-json", args.metadata_json),
+            ) if value is not None
+        ]
+        if unsupported:
+            raise api.ApiUsageError(
+                f"同步模式不支持参数：{', '.join(unsupported)}。"
+            )
         return
+    unsupported = []
+    if args.param:
+        unsupported.append("--param")
+    if args.json_params is not None:
+        unsupported.append("--json-params")
+    if args.raw_json is not None:
+        unsupported.append("--raw-json")
+    if unsupported:
+        raise api.ApiUsageError(
+            f"异步模式不支持参数：{', '.join(unsupported)}。"
+        )
+    if not args.wait:
+        unused_wait_options = [
+            name for name, value in (
+                ("--resource-api-key", args.resource_api_key),
+                ("--wait-timeout", args.wait_timeout),
+            ) if value is not None
+        ]
+        if unused_wait_options:
+            raise api.ApiUsageError(
+                "仅创建异步任务时不支持参数："
+                f"{', '.join(unused_wait_options)}。"
+            )
+    elif args.wait_timeout is None:
+        args.wait_timeout = 900
     if args.idempotency_key is not None and len(args.idempotency_key) > 128:
         raise api.ApiUsageError("--idempotency-key 最多 128 个字符。")
     if (
@@ -341,7 +380,6 @@ def output_rows(saved):
             "path": str(item.path),
             "bytes": item.bytes_written,
             "format": item.format,
-            "source_url": item.source_url,
         }
         for item in saved
     ]
@@ -402,7 +440,7 @@ def run_models(args, base_url, api_key):
     print(json.dumps({"models": model_ids}, ensure_ascii=False, indent=2))
 
 
-def run_sync_generate(args, base_url, api_key):
+def run_sync_generate(args, base_url, api_key, legacy_output=False):
     payload = build_generation_payload(args)
     if payload["model"] == "gpt-image-2-count" and payload["n"] != 1:
         raise api.ApiUsageError("gpt-image-2-count 的 --n 只能为 1。")
@@ -413,7 +451,28 @@ def run_sync_generate(args, base_url, api_key):
     if args.raw_json:
         write_raw_diagnostic(Path(args.raw_json), response.body, api_key)
     data = require_success(response, MODEL_KEY, payload["model"], api_key)
-    saved = api.save_image_items(data.get("data"), Path(args.output), args.timeout)
+    items = data.get("data")
+    if legacy_output:
+        if not isinstance(items, list) or not items:
+            raise api.ApiResponseError("图片响应中没有有效的结果。")
+        saved = api.save_image_items(
+            items[:1],
+            Path(args.output),
+            args.timeout,
+            preserve_requested_path=True,
+        )
+        print(json.dumps({
+            "status": response.status,
+            "base_url": base_url,
+            "model": payload["model"],
+            "output": str(Path(args.output).expanduser()),
+            "bytes": saved[0].bytes_written,
+            "content_type": api.header_value(
+                response.headers, "Content-Type"
+            ),
+        }, ensure_ascii=False, indent=2))
+        return
+    saved = api.save_image_items(items, Path(args.output), args.timeout)
     print(json.dumps({
         "mode": "sync",
         "operation": "generation",
@@ -458,18 +517,25 @@ def run_sync_edit(args, base_url, api_key, inputs):
 
 
 class TaskFailed(api.ApiResponseError):
-    def __init__(self, task, secrets=()):
+    def __init__(self, task_id, task, secrets=()):
         self.task = task
-        error = task.get("error") or {}
+        error = task.get("error")
+        if error is not None and not isinstance(error, dict):
+            super().__init__(f"异步任务 {task_id} 返回的 error 不是对象。")
+            return
+        error = error or {}
         safe_code = api.sanitize_diagnostic(
             str(error.get("code", "unknown")).encode("utf-8"), *secrets
         )
         safe_message = api.sanitize_diagnostic(
             str(error.get("message", "未知错误")).encode("utf-8"), *secrets
         )
+        safe_retryable = api.sanitize_diagnostic(
+            str(error.get("retryable", False)).encode("utf-8"), *secrets
+        )
         super().__init__(
-            f"异步任务 {task.get('id')} 失败：{safe_code} - {safe_message}；"
-            f"retryable={error.get('retryable', False)}"
+            f"异步任务 {task_id} 失败：{safe_code} - {safe_message}；"
+            f"retryable={safe_retryable}"
         )
 
 
@@ -550,10 +616,13 @@ def poll_task(
         if status == "succeeded":
             return task
         if status == "failed":
-            raise TaskFailed(task, (resource_key,))
+            raise TaskFailed(task_id, task, (resource_key,))
         if status not in {"queued", "in_progress"}:
+            safe_status = api.sanitize_diagnostic(
+                str(status).encode("utf-8"), resource_key
+            )
             raise api.ApiResponseError(
-                f"异步任务 {task_id} 返回了未知状态：{status}。"
+                f"异步任务 {task_id} 返回了未知状态：{safe_status}。"
             )
         interval = retry_delay(
             api.header_value(headers, "Retry-After", interval), interval
@@ -619,22 +688,33 @@ def create_async_task(args, base_url, api_key, inputs=None):
             )
         task = require_success(response, MODEL_KEY, model, api_key)
         task_id = task.get("id")
-        if not isinstance(task_id, str):
-            raise api.ApiResponseError("异步创建响应中没有任务 ID。")
+        if not isinstance(task_id, str) or not re.fullmatch(
+            r"task_[A-Za-z0-9_-]+", task_id
+        ):
+            raise api.ApiResponseError("异步创建响应中的任务 ID 无效。")
         return task, response.headers, idempotency_key
     except (urllib.error.URLError, api.ApiResponseError, OSError):
         print(f"Idempotency-Key：{idempotency_key}", file=sys.stderr)
         raise
 
 
-def _async_result(task, output, timeout, operation=None, model=None):
-    result = task.get("result") or {}
-    saved = api.save_image_items(result.get("images"), Path(output), timeout)
+def _async_result(task_id, task, output, timeout, operation=None, model=None):
+    result = task.get("result")
+    if not isinstance(result, dict):
+        raise api.ApiResponseError(
+            f"异步任务 {task_id} 返回的 result 不是对象。"
+        )
+    try:
+        saved = api.save_image_items(result.get("images"), Path(output), timeout)
+    except api.ApiResponseError as exc:
+        raise api.ApiResponseError(
+            f"异步任务 {task_id} 的结果无效：{exc}"
+        ) from exc
     return {
         "mode": "async",
         "operation": task.get("operation", operation),
         "model": task.get("model", model),
-        "task_id": task.get("id"),
+        "task_id": task_id,
         "status": task.get("status"),
         "progress": task.get("progress"),
         "outputs": output_rows(saved),
@@ -670,7 +750,7 @@ def run_async_create(args, base_url, api_key, inputs=None, wait_runtime=None):
         api.header_value(headers, "Retry-After", 2),
     )
     result = _async_result(
-        completed, args.output, args.timeout, operation, model
+        task["id"], completed, args.output, args.timeout, operation, model
     )
     result["idempotency_key"] = idempotency_key
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -695,13 +775,13 @@ def run_wait_command(args, base_url, resource_key):
         args.wait_timeout,
     )
     print(json.dumps(
-        _async_result(task, args.output, args.timeout),
+        _async_result(args.task_id, task, args.output, args.timeout),
         ensure_ascii=False,
         indent=2,
     ))
 
 
-def main(argv=None):
+def main(argv=None, legacy_output=False):
     args = parse_args(argv)
     try:
         validate_mode_args(args)
@@ -720,7 +800,7 @@ def main(argv=None):
                 run_async_create(args, base_url, api_key, wait_runtime=wait_runtime)
                 return 0
             _current, base_url, api_key = resolve_runtime(args)
-            run_sync_generate(args, base_url, api_key)
+            run_sync_generate(args, base_url, api_key, legacy_output)
         elif args.command == "edit":
             inputs = classify_edit_inputs(
                 args.image, args.image_base64_file, args.mask, args.async_mode,

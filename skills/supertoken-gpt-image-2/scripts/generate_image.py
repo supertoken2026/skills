@@ -10,7 +10,7 @@ def main(argv=None):
         argument.startswith("--timeout=") for argument in arguments
     ):
         arguments.extend(["--timeout", "180"])
-    return image_main(["generate", *arguments])
+    return image_main(["generate", *arguments], legacy_output=True)
 
 
 if __name__ == "__main__":

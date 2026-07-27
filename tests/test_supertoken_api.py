@@ -334,6 +334,16 @@ class ImageValidationAndOutputTests(unittest.TestCase):
             saved = api.save_image_items([item], Path(temp_dir) / "result.png", 5)
         self.assertEqual(saved[0].path.name, "result.jpeg")
 
+    def test_save_image_items_rejects_non_string_base64_as_a_response_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "image.png"
+
+            with self.assertRaisesRegex(api.ApiResponseError, "Base64"):
+                api.save_image_items([{"b64_json": 7}], output, timeout=5)
+
+            self.assertFalse(output.exists())
+            self.assertFalse(Path(f"{output}.part").exists())
+
     def test_save_image_items_removes_part_file_after_write_failure(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             output = Path(temp_dir) / "result.png"

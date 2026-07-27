@@ -22,6 +22,8 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 import supertoken_config as config  # noqa: E402
 import generate_image as generator  # noqa: E402
 import setup as setup_script  # noqa: E402
+import supertoken_api as api  # noqa: E402
+import supertoken_image as cli  # noqa: E402
 
 
 class SupertokenConfigTests(unittest.TestCase):
@@ -316,7 +318,8 @@ class LegacyGeneratorCompatibilityTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         image_main.assert_called_once_with(
-            ["generate", "--prompt", "cat", "--output", "cat.png", "--timeout", "180"]
+            ["generate", "--prompt", "cat", "--output", "cat.png", "--timeout", "180"],
+            legacy_output=True,
         )
 
     def test_main_preserves_explicit_legacy_timeout(self):
@@ -327,7 +330,51 @@ class LegacyGeneratorCompatibilityTests(unittest.TestCase):
                     code = generator.main(arguments)
 
                 self.assertEqual(code, 0)
-                image_main.assert_called_once_with(["generate", *arguments])
+                image_main.assert_called_once_with(
+                    ["generate", *arguments], legacy_output=True
+                )
+
+    def test_main_preserves_legacy_stdout_and_exact_output_path(self):
+        image_bytes = b"\x89PNG\r\n\x1a\nlegacy"
+        response = api.ApiResponse(
+            201,
+            {"Content-Type": "image/png"},
+            json.dumps({
+                "data": [{
+                    "b64_json": base64.b64encode(image_bytes).decode("ascii")
+                }]
+            }).encode("utf-8"),
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "legacy-result.jpg"
+            environment = {
+                config.API_KEY_ENV: "test-key",
+                config.CONFIG_DIR_ENV: str(Path(temp_dir) / "config"),
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                with patch.object(cli.api, "request_json", return_value=response):
+                    with contextlib.redirect_stdout(stdout):
+                        with contextlib.redirect_stderr(stderr):
+                            code = generator.main([
+                                "--prompt", "cat", "--output", str(output),
+                            ])
+
+            self.assertEqual(code, 0, stderr.getvalue())
+            self.assertEqual(output.read_bytes(), image_bytes)
+            self.assertFalse(output.with_suffix(".png").exists())
+            self.assertEqual(
+                json.loads(stdout.getvalue()),
+                {
+                    "status": 201,
+                    "base_url": config.DEFAULT_BASE_URL,
+                    "model": config.DEFAULT_MODEL,
+                    "output": str(output),
+                    "bytes": len(image_bytes),
+                    "content_type": "image/png",
+                },
+            )
 
 
 class SupertokenSetupTests(unittest.TestCase):

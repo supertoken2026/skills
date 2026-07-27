@@ -96,18 +96,28 @@ def download_image(url, timeout):
 
 
 def _item_bytes(item, timeout):
-    if item.get("b64_json"):
+    encoded = item.get("b64_json")
+    if encoded is not None:
+        if not isinstance(encoded, (str, bytes, bytearray)) or not encoded:
+            raise ApiResponseError("图片响应中的 Base64 无效。")
         try:
-            return base64.b64decode(item["b64_json"], validate=True), None
-        except (binascii.Error, ValueError) as exc:
+            return base64.b64decode(encoded, validate=True), None
+        except (binascii.Error, TypeError, UnicodeError, ValueError) as exc:
             raise ApiResponseError("图片响应中的 Base64 无效。") from exc
-    if item.get("url"):
-        return download_image(item["url"], timeout), item["url"]
+    url = item.get("url")
+    if url is not None:
+        if not isinstance(url, str) or not url:
+            raise ApiResponseError("图片响应中的 URL 无效。")
+        return download_image(url, timeout), url
     raise ApiResponseError("图片响应中没有 url 或 b64_json。")
 
 
-def _final_output_path(requested, index, count, image_format):
+def _final_output_path(
+    requested, index, count, image_format, preserve_requested_path=False,
+):
     requested = Path(requested).expanduser()
+    if preserve_requested_path:
+        return requested.resolve()
     suffix = FORMAT_SUFFIX[image_format]
     stem = requested.stem
     if count > 1:
@@ -115,7 +125,7 @@ def _final_output_path(requested, index, count, image_format):
     return requested.with_name(stem + suffix).resolve()
 
 
-def save_image_items(items, output_path, timeout):
+def save_image_items(items, output_path, timeout, preserve_requested_path=False):
     if not isinstance(items, list) or not items:
         raise ApiResponseError("图片响应中没有有效的结果。")
     saved = []
@@ -127,7 +137,13 @@ def save_image_items(items, output_path, timeout):
             image_format = detect_image_format(data)
         except ApiUsageError as exc:
             raise ApiResponseError("图片响应不是可识别的 PNG、JPEG 或 WebP。") from exc
-        final = _final_output_path(output_path, index, len(items), image_format)
+        final = _final_output_path(
+            output_path,
+            index,
+            len(items),
+            image_format,
+            preserve_requested_path,
+        )
         final.parent.mkdir(parents=True, exist_ok=True)
         part = Path(f"{final}.part")
         part.unlink(missing_ok=True)
