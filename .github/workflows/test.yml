@@ -103,6 +103,18 @@ jobs:
           entry = lock["skills"]["supertoken-gpt-image-2"]
           assert entry["sourceType"] == "local", entry
           PY
+          if [[ "$agent" == "codex" ]]; then
+            expected="$project/.agents/skills/supertoken-gpt-image-2"
+          else
+            expected="$project/.claude/skills/supertoken-gpt-image-2"
+          fi
+          test -f "$expected/scripts/supertoken_image.py"
+          test -f "$expected/scripts/supertoken_api.py"
+          test -f "$expected/references/gpt-image-2-api.md"
+          python "$expected/scripts/supertoken_image.py" --help
+          python "$expected/scripts/supertoken_image.py" generate --help
+          python "$expected/scripts/supertoken_image.py" edit --help
+          python "$expected/scripts/supertoken_image.py" wait --help
           done
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
             for profile in codex shared; do
