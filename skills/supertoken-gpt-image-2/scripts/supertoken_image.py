@@ -46,9 +46,13 @@ def add_image_options(parser, include_images=False):
     parser.add_argument("--json-params")
     parser.add_argument("--raw-json")
     parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument("--wait-timeout", type=int, default=900)
     parser.add_argument("--async", dest="async_mode", action="store_true")
     parser.add_argument("--wait", action="store_true")
     parser.add_argument("--idempotency-key")
+    parser.add_argument("--output-compression", type=int)
+    parser.add_argument("--client-reference-id")
+    parser.add_argument("--metadata-json")
     parser.add_argument("--allow-plaintext-key-store", action="store_true")
     if include_images:
         parser.add_argument("--image", action="append", default=[])
@@ -101,6 +105,25 @@ def validate_mode_args(args):
         raise api.ApiUsageError("当前模式需要 --output。")
     if not 1 <= args.count <= 10:
         raise api.ApiUsageError("--n 必须在 1 到 10 之间。")
+    if not args.async_mode:
+        return
+    if args.idempotency_key is not None and len(args.idempotency_key) > 128:
+        raise api.ApiUsageError("--idempotency-key 最多 128 个字符。")
+    if (
+        args.client_reference_id is not None
+        and len(args.client_reference_id) > 191
+    ):
+        raise api.ApiUsageError("--client-reference-id 最多 191 个字符。")
+    if (
+        args.output_compression is not None
+        and not 0 <= args.output_compression <= 100
+    ):
+        raise api.ApiUsageError("--output-compression 必须在 0 到 100 之间。")
+    args.metadata = None
+    if args.metadata_json is not None:
+        args.metadata = json.loads(args.metadata_json)
+        if not isinstance(args.metadata, dict):
+            raise api.ApiUsageError("--metadata-json 必须是 JSON 对象。")
 
 
 def parse_value(value):
@@ -140,6 +163,38 @@ def build_generation_payload(args):
         payload["background"] = args.background
     merge_extra_params(payload, args)
     return payload
+
+
+def _async_output(args):
+    value = {
+        "count": args.count,
+        "size": args.size,
+        "quality": args.quality,
+    }
+    if args.output_format:
+        value["format"] = args.output_format
+    if getattr(args, "output_compression", None) is not None:
+        value["compression"] = args.output_compression
+    if args.background:
+        value["background"] = args.background
+    return value
+
+
+def _add_async_task_fields(payload, args):
+    if getattr(args, "client_reference_id", None) is not None:
+        payload["client_reference_id"] = args.client_reference_id
+    if getattr(args, "metadata", None) is not None:
+        payload["metadata"] = args.metadata
+    return payload
+
+
+def build_async_generation_payload(args):
+    return _add_async_task_fields({
+        "model": args.model or DEFAULT_MODEL,
+        "operation": "generation",
+        "input": {"prompt": args.prompt},
+        "output": _async_output(args),
+    }, args)
 
 
 @dataclass(frozen=True)
@@ -241,6 +296,21 @@ def build_edit_payload(args):
         payload["background"] = args.background
     merge_extra_params(payload, args)
     return payload
+
+
+def build_async_url_edit_payload(args, inputs):
+    input_value = {
+        "prompt": args.prompt,
+        "images": [{"url": value} for value in inputs.values],
+    }
+    if inputs.mask:
+        input_value["mask"] = {"url": inputs.mask}
+    return _add_async_task_fields({
+        "model": args.model or DEFAULT_MODEL,
+        "operation": "edit",
+        "input": input_value,
+        "output": _async_output(args),
+    }, args)
 
 
 def write_raw_diagnostic(path, body, *secrets):
@@ -382,6 +452,237 @@ def run_sync_edit(args, base_url, api_key, inputs):
     }, ensure_ascii=False, indent=2))
 
 
+class TaskFailed(api.ApiResponseError):
+    def __init__(self, task, secrets=()):
+        self.task = task
+        error = task.get("error") or {}
+        safe_code = api.sanitize_diagnostic(
+            str(error.get("code", "unknown")).encode("utf-8"), *secrets
+        )
+        safe_message = api.sanitize_diagnostic(
+            str(error.get("message", "未知错误")).encode("utf-8"), *secrets
+        )
+        super().__init__(
+            f"异步任务 {task.get('id')} 失败：{safe_code} - {safe_message}；"
+            f"retryable={error.get('retryable', False)}"
+        )
+
+
+def retry_delay(value, fallback=2):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = fallback
+    return max(2, min(30, parsed))
+
+
+def query_task(base_url, resource_key, task_id, timeout):
+    if not re.fullmatch(r"task_[A-Za-z0-9_-]+", task_id):
+        raise api.ApiUsageError("任务 ID 格式无效。")
+    response = api.request_json(
+        "GET",
+        api.endpoint_url(base_url, f"/v1/image/tasks/{task_id}"),
+        resource_key,
+        timeout,
+    )
+    if response.status >= 400:
+        message = api.classify_http_error(
+            response.status, response.headers, RESOURCE_KEY
+        )
+        detail = api.sanitize_diagnostic(response.body, resource_key)
+        error = api.ApiResponseError(f"任务 {task_id} 查询失败：{message}\n{detail}")
+        error.status = response.status
+        error.headers = response.headers
+        raise error
+    return api.parse_json_response(response, (resource_key,)), response.headers
+
+
+def poll_task(
+    base_url,
+    resource_key,
+    task_id,
+    timeout,
+    wait_timeout,
+    initial_retry_after=2,
+    sleep=time.sleep,
+    monotonic=time.monotonic,
+):
+    started = monotonic()
+    interval = retry_delay(initial_retry_after)
+    consecutive_failures = 0
+    while monotonic() - started < wait_timeout:
+        try:
+            task, headers = query_task(base_url, resource_key, task_id, timeout)
+            consecutive_failures = 0
+        except urllib.error.URLError:
+            consecutive_failures += 1
+            if consecutive_failures > 3:
+                raise
+            sleep(interval)
+            continue
+        except api.ApiResponseError as exc:
+            if getattr(exc, "status", None) not in {429, 502, 503}:
+                raise
+            consecutive_failures += 1
+            if consecutive_failures > 3:
+                raise
+            retry_after = api.header_value(
+                getattr(exc, "headers", {}), "Retry-After", interval
+            )
+            sleep(retry_delay(retry_after, interval))
+            continue
+        status = task.get("status")
+        if status == "succeeded":
+            return task
+        if status == "failed":
+            raise TaskFailed(task, (resource_key,))
+        if status not in {"queued", "in_progress"}:
+            raise api.ApiResponseError(
+                f"异步任务 {task_id} 返回了未知状态：{status}。"
+            )
+        interval = retry_delay(
+            api.header_value(headers, "Retry-After", interval), interval
+        )
+        sleep(interval)
+    raise api.ApiResponseError(f"等待任务 {task_id} 超过 {wait_timeout} 秒。")
+
+
+def _multipart_async_edit(args, inputs):
+    fields = [
+        ("model", args.model or DEFAULT_MODEL),
+        ("operation", "edit"),
+        ("prompt", args.prompt),
+        ("n", args.count),
+        ("size", args.size),
+        ("quality", args.quality),
+    ]
+    if args.output_format:
+        fields.append(("output_format", args.output_format))
+    if args.output_compression is not None:
+        fields.append(("output_compression", args.output_compression))
+    if args.background:
+        fields.append(("background", args.background))
+    if args.client_reference_id is not None:
+        fields.append(("client_reference_id", args.client_reference_id))
+    if args.metadata is not None:
+        fields.append(("metadata", json.dumps(args.metadata, ensure_ascii=False)))
+    files = [
+        api.MultipartFile("image", item.path, f"image/{item.format}")
+        for item in inputs.values
+    ]
+    if inputs.mask:
+        files.append(api.MultipartFile(
+            "mask", inputs.mask.path, f"image/{inputs.mask.format}"
+        ))
+    return fields, files
+
+
+def create_async_task(args, base_url, api_key, inputs=None):
+    idempotency_key = (
+        uuid.uuid4().hex
+        if args.idempotency_key is None else args.idempotency_key
+    )
+    headers = {"Idempotency-Key": idempotency_key}
+    endpoint = api.endpoint_url(base_url, "/v1/image/tasks")
+    model = args.model or DEFAULT_MODEL
+    if model == "gpt-image-2-count" and args.count != 1:
+        raise api.ApiUsageError("gpt-image-2-count 的 --n 只能为 1。")
+    try:
+        if inputs is not None and inputs.kind == "local":
+            fields, files = _multipart_async_edit(args, inputs)
+            response = api.request_multipart(
+                "POST", endpoint, api_key, args.timeout, fields, files,
+                headers=headers,
+            )
+        else:
+            payload = (
+                build_async_generation_payload(args)
+                if inputs is None else build_async_url_edit_payload(args, inputs)
+            )
+            response = api.request_json(
+                "POST", endpoint, api_key, args.timeout, payload, headers=headers,
+            )
+        task = require_success(response, MODEL_KEY, model, api_key)
+        task_id = task.get("id")
+        if not isinstance(task_id, str):
+            raise api.ApiResponseError("异步创建响应中没有任务 ID。")
+        return task, response.headers, idempotency_key
+    except (urllib.error.URLError, api.ApiResponseError, OSError):
+        print(f"Idempotency-Key：{idempotency_key}", file=sys.stderr)
+        raise
+
+
+def _async_result(task, output, timeout, operation=None, model=None):
+    result = task.get("result") or {}
+    saved = api.save_image_items(result.get("images"), Path(output), timeout)
+    return {
+        "mode": "async",
+        "operation": task.get("operation", operation),
+        "model": task.get("model", model),
+        "task_id": task.get("id"),
+        "status": task.get("status"),
+        "progress": task.get("progress"),
+        "outputs": output_rows(saved),
+    }
+
+
+def run_async_create(args, base_url, api_key, inputs=None, wait_runtime=None):
+    task, headers, idempotency_key = create_async_task(
+        args, base_url, api_key, inputs
+    )
+    operation = "generation" if inputs is None else "edit"
+    model = args.model or DEFAULT_MODEL
+    if not args.wait:
+        print(json.dumps({
+            "mode": "async",
+            "operation": operation,
+            "model": model,
+            "task_id": task.get("id"),
+            "status": task.get("status"),
+            "progress": task.get("progress"),
+            "idempotency_key": idempotency_key,
+            "location": api.header_value(headers, "Location"),
+            "retry_after": api.header_value(headers, "Retry-After"),
+        }, ensure_ascii=False, indent=2))
+        return
+    resource_base_url, resource_key = wait_runtime
+    completed = poll_task(
+        resource_base_url,
+        resource_key,
+        task["id"],
+        args.timeout,
+        args.wait_timeout,
+        api.header_value(headers, "Retry-After", 2),
+    )
+    result = _async_result(
+        completed, args.output, args.timeout, operation, model
+    )
+    result["idempotency_key"] = idempotency_key
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def run_task_command(args, base_url, resource_key):
+    task, _headers = query_task(
+        base_url, resource_key, args.task_id, args.timeout
+    )
+    print(json.dumps(task, ensure_ascii=False, indent=2))
+
+
+def run_wait_command(args, base_url, resource_key):
+    task = poll_task(
+        base_url,
+        resource_key,
+        args.task_id,
+        args.timeout,
+        args.wait_timeout,
+    )
+    print(json.dumps(
+        _async_result(task, args.output, args.timeout),
+        ensure_ascii=False,
+        indent=2,
+    ))
+
+
 def main(argv=None):
     args = parse_args(argv)
     try:
@@ -391,7 +692,15 @@ def main(argv=None):
             run_models(args, base_url, api_key)
         elif args.command == "generate":
             if args.async_mode:
-                raise api.ApiUsageError("异步图片生成将在后续版本提供。")
+                wait_runtime = None
+                if args.wait:
+                    _current, resource_base_url, resource_key = resolve_runtime(
+                        args, RESOURCE_KEY
+                    )
+                    wait_runtime = (resource_base_url, resource_key)
+                _current, base_url, api_key = resolve_runtime(args)
+                run_async_create(args, base_url, api_key, wait_runtime=wait_runtime)
+                return 0
             _current, base_url, api_key = resolve_runtime(args)
             run_sync_generate(args, base_url, api_key)
         elif args.command == "edit":
@@ -399,11 +708,25 @@ def main(argv=None):
                 args.image, args.image_base64_file, args.mask, args.async_mode,
             )
             if args.async_mode:
-                raise api.ApiUsageError("异步图片编辑将在后续版本提供。")
+                wait_runtime = None
+                if args.wait:
+                    _current, resource_base_url, resource_key = resolve_runtime(
+                        args, RESOURCE_KEY
+                    )
+                    wait_runtime = (resource_base_url, resource_key)
+                _current, base_url, api_key = resolve_runtime(args)
+                run_async_create(
+                    args, base_url, api_key, inputs, wait_runtime=wait_runtime
+                )
+                return 0
             _current, base_url, api_key = resolve_runtime(args)
             run_sync_edit(args, base_url, api_key, inputs)
-        else:
-            raise api.ApiUsageError("该命令将在后续版本提供。")
+        elif args.command == "task":
+            _current, base_url, resource_key = resolve_runtime(args, RESOURCE_KEY)
+            run_task_command(args, base_url, resource_key)
+        elif args.command == "wait":
+            _current, base_url, resource_key = resolve_runtime(args, RESOURCE_KEY)
+            run_wait_command(args, base_url, resource_key)
     except (ConfigError, api.ApiUsageError, ValueError, json.JSONDecodeError) as exc:
         print(str(exc), file=sys.stderr)
         return 2

@@ -6,7 +6,9 @@ import os
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -556,3 +558,359 @@ class SyncEditTests(unittest.TestCase):
             self.assertEqual(len(result["outputs"]), 2)
             self.assertEqual(Path(result["outputs"][0]["path"]).read_bytes(), PNG_BYTES)
             self.assertEqual(Path(result["outputs"][1]["path"]).read_bytes(), PNG_BYTES)
+
+
+class AsyncTaskTests(unittest.TestCase):
+    def test_async_payloads_use_documented_json_field_locations(self):
+        args = SimpleNamespace(
+            model="gpt-image-2", prompt="rainy street", count=2,
+            size="1024x1024", quality="low", output_format="png",
+            output_compression=None, background=None,
+            client_reference_id=None, metadata=None,
+        )
+        self.assertEqual(
+            cli.build_async_generation_payload(args),
+            {
+                "model": "gpt-image-2",
+                "operation": "generation",
+                "input": {"prompt": "rainy street"},
+                "output": {
+                    "count": 2,
+                    "size": "1024x1024",
+                    "quality": "low",
+                    "format": "png",
+                },
+            },
+        )
+
+        args.output_compression = 80
+        args.background = "transparent"
+        args.client_reference_id = "client-7"
+        args.metadata = {"campaign": "launch"}
+        inputs = cli.EditInputs(
+            "url",
+            ["https://img.example/one.png", "https://img.example/two.png"],
+            "https://img.example/mask.png",
+        )
+        self.assertEqual(
+            cli.build_async_url_edit_payload(args, inputs),
+            {
+                "model": "gpt-image-2",
+                "operation": "edit",
+                "input": {
+                    "prompt": "rainy street",
+                    "images": [
+                        {"url": "https://img.example/one.png"},
+                        {"url": "https://img.example/two.png"},
+                    ],
+                    "mask": {"url": "https://img.example/mask.png"},
+                },
+                "output": {
+                    "count": 2,
+                    "size": "1024x1024",
+                    "quality": "low",
+                    "format": "png",
+                    "compression": 80,
+                    "background": "transparent",
+                },
+                "client_reference_id": "client-7",
+                "metadata": {"campaign": "launch"},
+            },
+        )
+
+    def test_local_async_edit_uses_documented_multipart_fields(self):
+        response = api_response({"id": "task_local", "status": "queued"}, 202)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            mask = Path(temp_dir) / "mask.png"
+            source.write_bytes(PNG_BYTES)
+            mask.write_bytes(PNG_BYTES)
+            with patch.object(cli.api, "request_multipart", return_value=response) as request:
+                code, stdout, stderr = run_cli([
+                    "edit", "--async", "--prompt", "combine",
+                    "--image", str(source), "--mask", str(mask),
+                    "--model", "gpt-image-2", "--n", "2",
+                    "--format", "webp", "--background", "opaque",
+                    "--output-compression", "72",
+                    "--client-reference-id", "client-local",
+                    "--metadata-json", '{"source":"studio"}',
+                    "--idempotency-key", "idem-local",
+                ], {config.API_KEY_ENV: "model-key"})
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["task_id"], "task_local")
+        method, url, key, timeout, fields, files = request.call_args.args
+        self.assertEqual((method, url, key, timeout), (
+            "POST", "https://api.supertoken.cc/v1/image/tasks", "model-key", 300,
+        ))
+        self.assertEqual(fields, [
+            ("model", "gpt-image-2"), ("operation", "edit"),
+            ("prompt", "combine"), ("n", 2), ("size", "1024x1024"),
+            ("quality", "low"), ("output_format", "webp"),
+            ("output_compression", 72), ("background", "opaque"),
+            ("client_reference_id", "client-local"),
+            ("metadata", '{"source": "studio"}'),
+        ])
+        self.assertEqual([item.field for item in files], ["image", "mask"])
+        self.assertEqual(request.call_args.kwargs["headers"], {
+            "Idempotency-Key": "idem-local",
+        })
+
+    def test_create_only_reports_task_headers_and_does_not_read_resource_key(self):
+        response = api_response(
+            {"id": "task_create", "status": "queued", "progress": 0},
+            202,
+            {"Location": "/v1/image/tasks/task_create", "Retry-After": "7"},
+        )
+        with patch.object(cli.uuid, "uuid4", return_value=SimpleNamespace(hex="generated-key")):
+            with patch.object(cli.api, "request_json", return_value=response) as request:
+                with patch.object(cli, "get_api_key", wraps=cli.get_api_key) as get_key:
+                    code, stdout, stderr = run_cli([
+                        "generate", "--async", "--prompt", "cat",
+                    ], {config.API_KEY_ENV: "model-key"})
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout), {
+            "mode": "async",
+            "operation": "generation",
+            "model": "gpt-image-2-count",
+            "task_id": "task_create",
+            "status": "queued",
+            "progress": 0,
+            "idempotency_key": "generated-key",
+            "location": "/v1/image/tasks/task_create",
+            "retry_after": "7",
+        })
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(request.call_args.kwargs["headers"], {
+            "Idempotency-Key": "generated-key",
+        })
+        self.assertTrue(all(
+            call.args[0] != cli.RESOURCE_KEY for call in get_key.call_args_list
+        ))
+
+    def test_provided_empty_idempotency_key_is_not_replaced(self):
+        response = api_response({"id": "task_empty_key", "status": "queued"}, 202)
+        with patch.object(cli.uuid, "uuid4", side_effect=AssertionError("uuid")):
+            with patch.object(cli.api, "request_json", return_value=response) as request:
+                code, stdout, stderr = run_cli([
+                    "generate", "--async", "--prompt", "cat",
+                    "--idempotency-key", "",
+                ], {config.API_KEY_ENV: "model-key"})
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["idempotency_key"], "")
+        self.assertEqual(request.call_args.kwargs["headers"], {
+            "Idempotency-Key": "",
+        })
+
+    def test_async_wait_uses_model_key_for_post_resource_key_for_gets_and_saves_all(self):
+        encoded = base64.b64encode(PNG_BYTES).decode("ascii")
+        responses = [
+            api_response(
+                {"id": "task_wait", "status": "queued", "progress": 0}, 202,
+                {"Retry-After": "2"},
+            ),
+            api_response({"id": "task_wait", "status": "queued", "progress": 5},
+                         headers={"Retry-After": "3"}),
+            api_response({"id": "task_wait", "status": "in_progress", "progress": 60},
+                         headers={"Retry-After": "4"}),
+            api_response({
+                "id": "task_wait", "status": "succeeded", "progress": 100,
+                "model": "gpt-image-2", "operation": "generation",
+                "result": {"images": [
+                    {"b64_json": encoded}, {"b64_json": encoded},
+                ]},
+            }),
+        ]
+        sleeps = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "result.png"
+            with patch.object(cli.api, "request_json", side_effect=responses) as request:
+                defaults = (2, sleeps.append, cli.time.monotonic)
+                with patch.object(cli.poll_task, "__defaults__", defaults):
+                    code, stdout, stderr = run_cli([
+                        "generate", "--async", "--wait", "--prompt", "cat",
+                        "--model", "gpt-image-2", "--output", str(output),
+                        "--idempotency-key", "provided-key",
+                    ], {
+                        config.API_KEY_ENV: "model-key",
+                        config.RESOURCE_API_KEY_ENV: "resource-key",
+                    })
+
+            result = json.loads(stdout)
+            self.assertEqual(code, 0, stderr)
+            self.assertEqual([call.args[0] for call in request.call_args_list], [
+                "POST", "GET", "GET", "GET",
+            ])
+            self.assertEqual([call.args[2] for call in request.call_args_list], [
+                "model-key", "resource-key", "resource-key", "resource-key",
+            ])
+            self.assertEqual(sleeps, [3, 4])
+            self.assertEqual(result["mode"], "async")
+            self.assertEqual(result["task_id"], "task_wait")
+            self.assertEqual(result["status"], "succeeded")
+            self.assertEqual(result["idempotency_key"], "provided-key")
+            self.assertEqual(len(result["outputs"]), 2)
+            self.assertEqual(Path(result["outputs"][0]["path"]).read_bytes(), PNG_BYTES)
+            self.assertEqual(Path(result["outputs"][1]["path"]).read_bytes(), PNG_BYTES)
+
+    def test_retry_delay_falls_back_and_clamps_without_traceback(self):
+        self.assertEqual(cli.retry_delay(None, 9), 9)
+        self.assertEqual(cli.retry_delay("not-an-int", 11), 11)
+        self.assertEqual(cli.retry_delay("1"), 2)
+        self.assertEqual(cli.retry_delay("60"), 30)
+
+    def test_task_failed_redacts_server_supplied_credentials(self):
+        error = cli.TaskFailed(
+            {
+                "id": "task_failed",
+                "error": {
+                    "code": "blocked",
+                    "message": (
+                        "sk-model123456 ak_resource123456 "
+                        "wk-webhook123456 explicit-resource-secret"
+                    ),
+                    "retryable": True,
+                },
+            },
+            ("explicit-resource-secret",),
+        )
+        text = str(error)
+        for secret in (
+            "sk-model123456",
+            "ak_resource123456",
+            "wk-webhook123456",
+            "explicit-resource-secret",
+        ):
+            self.assertNotIn(secret, text)
+        self.assertIn("blocked", text)
+        self.assertIn("retryable=True", text)
+
+    def test_wait_reports_failed_task_without_resubmitting(self):
+        failed = api_response({
+            "id": "task_failed", "status": "failed",
+            "error": {"code": "blocked", "message": "policy", "retryable": False},
+        })
+        with patch.object(cli.api, "request_json", return_value=failed) as request:
+            code, _stdout, stderr = run_cli([
+                "wait", "task_failed", "--output", "unused.png",
+            ], {config.RESOURCE_API_KEY_ENV: "resource-key"})
+
+        self.assertEqual(code, 1)
+        self.assertIn("task_failed", stderr)
+        self.assertIn("blocked", stderr)
+        self.assertIn("policy", stderr)
+        self.assertIn("retryable=False", stderr)
+        self.assertEqual([call.args[0] for call in request.call_args_list], ["GET"])
+
+    def test_polling_retries_only_bounded_transient_failures_and_resets_after_success(self):
+        transient = api.ApiResponseError("transient")
+        transient.status = 503
+        transient.headers = {"Retry-After": "2"}
+        sequence = [
+            urllib.error.URLError("offline"),
+            urllib.error.URLError("offline"),
+            urllib.error.URLError("offline"),
+            ({"id": "task_retry", "status": "queued"}, {"Retry-After": "2"}),
+            transient, transient, transient,
+            ({"id": "task_retry", "status": "succeeded"}, {}),
+        ]
+        with patch.object(cli, "query_task", side_effect=sequence) as query:
+            result = cli.poll_task(
+                "https://api.example", "resource-key", "task_retry", 5, 100,
+                sleep=lambda _seconds: None, monotonic=lambda: 0,
+            )
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(query.call_count, 8)
+
+        cases = [urllib.error.URLError("offline")]
+        for status in (429, 502, 503):
+            error = api.ApiResponseError("transient")
+            error.status = status
+            error.headers = {}
+            cases.append(error)
+        for error in cases:
+            with self.subTest(error=error):
+                with patch.object(cli, "query_task", side_effect=[error] * 4) as query:
+                    with self.assertRaises(type(error)):
+                        cli.poll_task(
+                            "https://api.example", "resource-key", "task_retry", 5, 100,
+                            sleep=lambda _seconds: None, monotonic=lambda: 0,
+                        )
+                self.assertEqual(query.call_count, 4)
+
+    def test_query_rejects_invalid_ids_and_non_transient_http_fails_immediately(self):
+        with patch.object(cli.api, "request_json") as request:
+            with self.assertRaises(api.ApiUsageError):
+                cli.query_task("https://api.example", "resource-key", "bad/id", 5)
+        request.assert_not_called()
+
+        response = api_response({"error": "forbidden"}, 403)
+        with patch.object(cli.api, "request_json", return_value=response) as request:
+            with self.assertRaises(api.ApiResponseError) as raised:
+                cli.query_task(
+                    "https://api.example", "explicit-resource-key", "task_valid", 5,
+                )
+        self.assertEqual(raised.exception.status, 403)
+        self.assertNotIn("explicit-resource-key", str(raised.exception))
+        self.assertEqual(request.call_count, 1)
+
+    def test_post_failure_is_not_retried_and_prints_recovery_key(self):
+        with patch.object(cli.api, "request_json", side_effect=urllib.error.URLError("offline")) as request:
+            code, _stdout, stderr = run_cli([
+                "generate", "--async", "--prompt", "cat",
+                "--idempotency-key", "recovery-key",
+            ], {config.API_KEY_ENV: "model-key"})
+
+        self.assertEqual(code, 1)
+        self.assertEqual(request.call_count, 1)
+        self.assertIn("recovery-key", stderr)
+
+    def test_resource_key_and_async_option_validation_happen_before_requests(self):
+        cases = [
+            ["task", "task_missing"],
+            ["wait", "task_missing", "--output", "unused.png"],
+        ]
+        for argv in cases:
+            with self.subTest(argv=argv):
+                with patch.object(cli.api, "request_json") as request:
+                    code, _stdout, stderr = run_cli(argv)
+                self.assertEqual(code, 2)
+                self.assertIn(config.RESOURCE_API_KEY_ENV, stderr)
+                request.assert_not_called()
+
+        invalid_async = [
+            ["generate", "--async", "--prompt", "cat", "--idempotency-key", "x" * 129],
+            ["generate", "--async", "--prompt", "cat", "--client-reference-id", "x" * 192],
+            ["generate", "--async", "--prompt", "cat", "--output-compression", "101"],
+            ["generate", "--async", "--prompt", "cat", "--metadata-json", "[]"],
+        ]
+        for argv in invalid_async:
+            with self.subTest(argv=argv):
+                with patch.object(cli.api, "request_json") as request:
+                    code, _stdout, _stderr = run_cli(argv, {config.API_KEY_ENV: "model-key"})
+                self.assertEqual(code, 2)
+                request.assert_not_called()
+
+        with patch.object(cli.api, "request_json") as request:
+            code, _stdout, stderr = run_cli([
+                "generate", "--async", "--wait", "--prompt", "cat",
+                "--output", "unused.png",
+            ], {config.API_KEY_ENV: "model-key"})
+        self.assertEqual(code, 2)
+        self.assertIn(config.RESOURCE_API_KEY_ENV, stderr)
+        request.assert_not_called()
+
+    def test_async_base64_edit_exits_two_before_any_request(self):
+        encoded = base64.b64encode(PNG_BYTES).decode("ascii")
+        with patch.object(cli.api, "request_json") as json_request:
+            with patch.object(cli.api, "request_multipart") as multipart_request:
+                code, _stdout, stderr = run_cli([
+                    "edit", "--async", "--prompt", "combine",
+                    "--image", f"data:image/png;base64,{encoded}",
+                ], {config.API_KEY_ENV: "model-key"})
+        self.assertEqual(code, 2)
+        self.assertIn("Base64", stderr)
+        json_request.assert_not_called()
+        multipart_request.assert_not_called()
