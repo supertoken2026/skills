@@ -4,6 +4,7 @@ import io
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -42,6 +43,48 @@ class SupertokenConfigTests(unittest.TestCase):
 
         self.assertEqual(value["base_url"], "https://example.test/v1")
 
+    def test_build_config_normalizes_clean_https_bases(self):
+        cases = {
+            "  https://EXAMPLE.TEST:443/v1/\t": "https://example.test/v1",
+            "https://127.0.0.1:8443/api": "https://127.0.0.1:8443/api",
+            "https://[2001:DB8::1]:443/v1": "https://[2001:db8::1]/v1",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(config.build_config(raw)["base_url"], expected)
+
+    def test_build_config_rejects_unclean_or_non_https_bases(self):
+        invalid = [
+            "http://example.test",
+            "//example.test/v1",
+            "/v1",
+            "https:///v1",
+            "https://user:pass@example.test/v1",
+            "https://example.test/v1?token=secret",
+            "https://example.test/v1#fragment",
+            "https://example.test:0/v1",
+            "https://example.test:65536/v1",
+            "https://example.test:bad/v1",
+            "https://example.test/a//b",
+            "https://example.test/a/../b",
+            "https://example.test/a/%2e%2e/b",
+            "https://example.test/a/%2fb",
+            "https://example.test/a/%5cb",
+            "https://example.test/a%20b",
+            "https://example.test/%00v1",
+            "https://example.test/%7fv1",
+            "https://example.test\\v1",
+            "https://example.test:/v1",
+            "https://example.test/a b",
+            "https://example.test/\u63a5\u53e3",
+            "https://example.test/\x00v1",
+            "https://[2001:db8::1/v1",
+        ]
+        for value in invalid:
+            with self.subTest(value=repr(value)):
+                with self.assertRaisesRegex(config.ConfigError, "base_url"):
+                    config.build_config(value)
+
     def test_config_dir_uses_environment_override(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             with patch.dict(os.environ, {config.CONFIG_DIR_ENV: temp_dir}):
@@ -52,6 +95,42 @@ class SupertokenConfigTests(unittest.TestCase):
             with patch.object(config, "_macos_read_key") as secure_read:
                 self.assertEqual(config.get_api_key(), "env-secret")
                 secure_read.assert_not_called()
+
+    def test_api_keys_are_trimmed_before_type_validation(self):
+        self.assertEqual(
+            config.validate_api_key("  sk-model123456  ", config.MODEL_KEY),
+            "sk-model123456",
+        )
+        with self.assertRaisesRegex(config.ConfigError, "资源 API Key"):
+            config.validate_api_key("  ak_resource123456  ", config.MODEL_KEY)
+
+    def test_api_keys_reject_control_characters_without_echoing_the_value(self):
+        for value in (
+            "secret\nvalue", "secret\x00value", "secret\x7fvalue",
+            "sk-model123456\n", "\tsk-model123456",
+        ):
+            with self.subTest(value=repr(value)):
+                with self.assertRaises(config.ConfigError) as raised:
+                    config.validate_api_key(value)
+                self.assertIn("控制字符", str(raised.exception))
+                self.assertNotIn(value, str(raised.exception))
+
+    def test_environment_and_plaintext_keys_return_normalized_values(self):
+        with patch.dict(os.environ, {config.API_KEY_ENV: "  env-secret  "}):
+            self.assertEqual(config.get_api_key(), "env-secret")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "credentials.json").write_text(
+                json.dumps({"api_key": "  stored-secret  "}), encoding="utf-8"
+            )
+            environment = {
+                config.CONFIG_DIR_ENV: temp_dir,
+                config.API_KEY_ENV: "",
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                with patch.object(config.platform, "system", return_value="Linux"):
+                    with patch.object(config.shutil, "which", return_value=None):
+                        self.assertEqual(config.get_api_key(), "stored-secret")
 
     def test_save_api_key_rejects_empty_value(self):
         with self.assertRaisesRegex(config.ConfigError, "Key"):
@@ -74,6 +153,20 @@ class SupertokenConfigTests(unittest.TestCase):
             if os.name == "posix":
                 mode = stat.S_IMODE(credential_path.stat().st_mode)
                 self.assertEqual(mode, 0o600)
+
+    def test_save_api_key_persists_only_the_normalized_value(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            environment = {
+                config.CONFIG_DIR_ENV: temp_dir,
+                config.DISABLE_SECURE_STORE_ENV: "1",
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                config.save_api_key("  saved-secret  ", allow_plaintext=True)
+
+            stored = json.loads(
+                (Path(temp_dir) / "credentials.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(stored["api_key"], "saved-secret")
 
     def test_linux_without_secret_tool_returns_no_secure_key(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -312,6 +405,74 @@ class SupertokenConfigTests(unittest.TestCase):
 
 
 class LegacyGeneratorCompatibilityTests(unittest.TestCase):
+    def test_legacy_help_exposes_only_v01_options(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPTS_DIR / "generate_image.py"), "--help"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--prompt", result.stdout)
+        self.assertIn("--json-params", result.stdout)
+        for modern in (
+            " generate ", "--async", "--wait", "--idempotency-key", "--n",
+            "--metadata-json", "--resource-api-key",
+        ):
+            self.assertNotIn(modern, result.stdout)
+
+    def test_legacy_wrapper_rejects_modern_only_options(self):
+        for option in (
+            "--async", "--wait", "--idempotency-key", "--n", "--metadata-json",
+        ):
+            with self.subTest(option=option):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPTS_DIR / "generate_image.py"),
+                        "--prompt", "cat", "--output", "cat.png", option,
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertNotIn("generate_image.py generate", result.stderr)
+
+    def test_legacy_json_param_file_errors_exit_two_before_request(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            invalid_utf8 = root / "invalid-utf8.json"
+            invalid_utf8.write_bytes(b"\xff")
+            invalid_json = root / "invalid-json.json"
+            invalid_json.write_text("{", encoding="utf-8")
+            unreadable = root / "directory.json"
+            unreadable.mkdir()
+            cases = [root / "missing.json", invalid_utf8, invalid_json, unreadable]
+            environment = {
+                **os.environ,
+                config.CONFIG_DIR_ENV: str(root / "config"),
+                config.API_KEY_ENV: "test-key",
+            }
+            for path in cases:
+                with self.subTest(path=path.name):
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            str(SCRIPTS_DIR / "generate_image.py"),
+                            "--prompt", "cat",
+                            "--output", str(root / "out.png"),
+                            "--json-params", str(path),
+                        ],
+                        text=True,
+                        capture_output=True,
+                        env=environment,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
+
     def test_main_uses_legacy_timeout_when_omitted(self):
         with patch.object(generator, "image_main", return_value=0) as image_main:
             code = generator.main(["--prompt", "cat", "--output", "cat.png"])
@@ -375,6 +536,65 @@ class LegacyGeneratorCompatibilityTests(unittest.TestCase):
                     "content_type": "image/png",
                 },
             )
+
+    def test_legacy_stdout_redacts_server_controlled_content_type(self):
+        image_bytes = b"\x89PNG\r\n\x1a\nlegacy"
+        response = api.ApiResponse(
+            201,
+            {"Content-Type": "image/png; note=sk-serversecret123"},
+            json.dumps({
+                "data": [{
+                    "b64_json": base64.b64encode(image_bytes).decode("ascii")
+                }]
+            }).encode("utf-8"),
+        )
+        stdout = io.StringIO()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "legacy.png"
+            environment = {
+                config.API_KEY_ENV: "test-key",
+                config.CONFIG_DIR_ENV: str(Path(temp_dir) / "config"),
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                with patch.object(cli.api, "request_json", return_value=response):
+                    with contextlib.redirect_stdout(stdout):
+                        code = generator.main([
+                            "--prompt", "cat", "--output", str(output),
+                        ])
+
+        self.assertEqual(code, 0)
+        value = json.loads(stdout.getvalue())
+        self.assertEqual(value["content_type"], "image/png; note=[REDACTED]")
+        self.assertNotIn("sk-serversecret123", stdout.getvalue())
+
+    def test_legacy_sync_rejects_more_results_than_requested(self):
+        image_bytes = b"\x89PNG\r\n\x1a\nlegacy"
+        item = {"b64_json": base64.b64encode(image_bytes).decode("ascii")}
+        response = api.ApiResponse(
+            200,
+            {"Content-Type": "application/json"},
+            json.dumps({"data": [item, item]}).encode("utf-8"),
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "legacy.png"
+            environment = {
+                config.API_KEY_ENV: "test-key",
+                config.CONFIG_DIR_ENV: str(Path(temp_dir) / "config"),
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                with patch.object(cli.api, "request_json", return_value=response):
+                    with contextlib.redirect_stdout(stdout):
+                        with contextlib.redirect_stderr(stderr):
+                            code = generator.main([
+                                "--prompt", "cat", "--output", str(output),
+                            ])
+
+            self.assertEqual(code, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("预期 1", stderr.getvalue())
+            self.assertFalse(output.exists())
 
 
 class SupertokenSetupTests(unittest.TestCase):

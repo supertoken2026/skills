@@ -3,11 +3,15 @@ import base64
 import binascii
 import ctypes
 import ctypes.wintypes
+import ipaddress
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
+import unicodedata
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,6 +55,78 @@ CREDENTIALS = {
 
 class ConfigError(RuntimeError):
     pass
+
+
+ASCII_WHITESPACE = " \t\r\n\v\f"
+DNS_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+
+
+def normalize_api_base(value):
+    message = "配置中的 base_url 必须是干净的绝对 HTTPS 地址。"
+    if not isinstance(value, str):
+        raise ConfigError(message)
+    value = value.strip(ASCII_WHITESPACE)
+    if not value or any(ord(char) > 127 or ord(char) < 32 or ord(char) == 127
+                        for char in value):
+        raise ConfigError(message)
+    if any(char.isspace() for char in value) or "\\" in value:
+        raise ConfigError(message)
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ConfigError(message) from exc
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.netloc
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.netloc.endswith(":")
+    ):
+        raise ConfigError(message)
+    if port is not None and not 1 <= port <= 65535:
+        raise ConfigError(message)
+
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        if (
+            len(host) > 253
+            or host.endswith(".")
+            or any(not DNS_LABEL.fullmatch(label) for label in host.split("."))
+        ):
+            raise ConfigError(message)
+        display_host = host.lower()
+    else:
+        display_host = address.compressed.lower()
+        if address.version == 6:
+            display_host = f"[{display_host}]"
+
+    path = parsed.path
+    if "//" in path or re.search(r"%(?:2f|5c)", path, re.IGNORECASE):
+        raise ConfigError(message)
+    if re.search(r"%(?![0-9A-Fa-f]{2})", path):
+        raise ConfigError(message)
+    try:
+        decoded_path = urllib.parse.unquote_to_bytes(path).decode("ascii")
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ConfigError(message) from exc
+    if any(segment in {".", ".."} for segment in decoded_path.split("/")):
+        raise ConfigError(message)
+    if any(
+        char.isspace() or ord(char) < 32 or ord(char) == 127
+        for char in decoded_path
+    ):
+        raise ConfigError(message)
+    path = path.rstrip("/")
+    netloc = display_host
+    if port is not None and port != 443:
+        netloc = f"{display_host}:{port}"
+    return urllib.parse.urlunsplit(("https", netloc, path, "", ""))
 
 
 def _read_json_object(path, label):
@@ -111,18 +187,19 @@ def _atomic_write_text(path, text, mode=None):
 
 
 def build_config(base_url=DEFAULT_BASE_URL, model=DEFAULT_MODEL):
-    if not isinstance(base_url, str) or not base_url.strip():
-        raise ConfigError("配置文件中的 base_url 必须是非空字符串。")
     if not isinstance(model, str) or not model.strip():
         raise ConfigError("配置文件中的 model 必须是非空字符串。")
     return {
         "version": CONFIG_VERSION,
-        "base_url": base_url.rstrip("/"),
+        "base_url": normalize_api_base(base_url),
         "model": model,
     }
 
 
 def save_config(value):
+    if not isinstance(value, dict):
+        raise ConfigError("配置必须是对象。")
+    value = build_config(value.get("base_url"), value.get("model"))
     _atomic_write_text(
         config_path(), json.dumps(value, ensure_ascii=False, indent=2) + "\n"
     )
@@ -286,7 +363,12 @@ def _credential_spec(kind):
 
 
 def _validate_key_kind(value, spec):
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str):
+        raise ConfigError(f"{spec.env_name} 必须是非空字符串。")
+    if any(unicodedata.category(char) == "Cc" for char in value):
+        raise ConfigError(f"{spec.env_name} 不能包含控制字符。")
+    value = value.strip()
+    if not value:
         raise ConfigError(f"{spec.env_name} 必须是非空字符串。")
     expected_labels = {
         MODEL_KEY: "模型 API Token（sk-...）",
@@ -329,7 +411,7 @@ def save_api_key(api_key, allow_plaintext=False, kind=MODEL_KEY):
     spec = _credential_spec(kind)
     if not api_key:
         raise ConfigError(f"需要 {spec.env_name} 对应的 Key。")
-    validate_api_key(api_key, kind)
+    api_key = validate_api_key(api_key, kind)
     system = platform.system()
     if not os.environ.get(DISABLE_SECURE_STORE_ENV):
         writers = {

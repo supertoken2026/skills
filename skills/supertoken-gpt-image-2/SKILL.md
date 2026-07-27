@@ -81,7 +81,7 @@ python3 scripts/supertoken_image.py edit \
   --output ./sketch.png
 ```
 
-一次 `edit` 只能使用本地文件、URL 或 Base64 中的一种，不能混用。本地 Mask 只能配合本地图片；异步 URL 编辑可使用 URL Mask。Base64 只支持同步编辑，可通过 `--image-base64-file` 读取，避免把长内容写进命令历史。
+一次 `edit` 只能使用本地文件、URL 或 Base64 中的一种，不能混用。本地 Mask 只能配合本地图片；异步 URL 编辑可使用 URL Mask。Base64 只支持同步编辑，可通过 `--image-base64-file` 读取，避免把长内容写进命令历史。同步编辑会发送 `--n`；`gpt-image-2-count` 只允许 `--n 1`。
 
 只创建异步任务时不要传 `--output`。如果只有模型 Token、尚未配置资源 Key，提交前必须告诉用户：任务可以创建，但配置 `SUPERTOKEN_RESOURCE_API_KEY` 之前无法查询或等待。显式提供幂等键，便于提交结果不确定时安全确认或重试：
 
@@ -117,10 +117,11 @@ python3 scripts/supertoken_image.py wait task_example123 \
 
 ## 结果与失败处理
 
-- 同步请求和 `--async --wait` 会保存所有返回图片。成功后向用户报告模型、存在时的任务 ID，以及 `outputs[]` 中每个绝对路径。
-- 多图结果按 `name-1.ext`、`name-2.ext` 依次命名；扩展名根据内容确定为 `.png`、`.jpeg` 或 `.webp`。文件通过 `.part` 原子保存。
+- 同步请求必须返回与 `--n` 相同数量的图片；恢复已有异步任务时接受 1 到 10 张。单次保存的解码结果总量不能超过 256 MiB。
+- 多图结果按 `name-1.ext`、`name-2.ext` 依次命名；扩展名根据内容确定为 `.png`、`.jpeg` 或 `.webp`。文件通过同目录唯一临时文件原子保存，中途失败时清理本次输出。
 - 同步生成、同步编辑和异步创建的 POST 不自动重试。手动重试同一个异步请求时，复用原来的 `Idempotency-Key`；不同请求使用新键。
-- `task` 只查询一次；`wait` 会轮询 `queued` 和 `in_progress`，在 `succeeded` 时保存图片，在 `failed` 时停止。
+- `task` 只输出任务 ID、状态、可选进度和脱敏失败摘要。`wait` 会轮询 `queued` 和 `in_progress`，在 `succeeded` 时保存图片，在 `failed` 时停止；任务查询、轮询休眠和结果下载共用一个截止时间。
+- 自定义 API 基址必须是干净的绝对 HTTPS 地址。认证请求不跟随重定向，诊断输出会删除 URL 中的用户信息、查询参数和片段。
 - 异步 Base64 编辑和 Webhook 接收不在本版范围内。
 
 ## English
@@ -201,7 +202,7 @@ python3 scripts/supertoken_image.py edit \
   --output ./sketch.png
 ```
 
-One `edit` invocation must use exactly one input family: local files, URLs, or Base64. Do not mix them. A local Mask requires local images; an asynchronous URL edit may use a URL Mask. Base64 is synchronous-only and can be read with `--image-base64-file` to keep long data out of shell history.
+One `edit` invocation must use exactly one input family: local files, URLs, or Base64. Do not mix them. A local Mask requires local images; an asynchronous URL edit may use a URL Mask. Base64 is synchronous-only and can be read with `--image-base64-file` to keep long data out of shell history. Sync edits send `--n`; `gpt-image-2-count` accepts only `--n 1`.
 
 For create-only asynchronous work, omit `--output`. If only the model Token is available, warn the user before submission that the task can be created but cannot be queried or waited on until `SUPERTOKEN_RESOURCE_API_KEY` is configured. Supply an explicit idempotency key when the same request may need to be confirmed or retried:
 
@@ -237,8 +238,9 @@ python3 scripts/supertoken_image.py wait task_example123 \
 
 ### Results and failures
 
-- Synchronous requests and `--async --wait` save every returned image. Report the model, the task ID when present, and every absolute path in `outputs[]`.
-- Multiple results are named `name-1.ext`, `name-2.ext`, and so on; content determines whether the suffix is `.png`, `.jpeg`, or `.webp`. Files are saved atomically through `.part`.
+- A synchronous response must contain exactly the requested `--n`; a resumed asynchronous task may contain 1-10 images. Aggregate decoded output is limited to 256 MiB per save.
+- Multiple results are named `name-1.ext`, `name-2.ext`, and so on; content determines whether the suffix is `.png`, `.jpeg`, or `.webp`. Unique temporary files in the destination directory are promoted atomically, and a later failure removes outputs from that save.
 - Generation, edit, and task-creation POST requests are never retried automatically. A manual retry of the same asynchronous request must reuse its original `Idempotency-Key`; a different request needs a new key.
-- `task` queries once. `wait` polls `queued` and `in_progress`, saves images on `succeeded`, and stops on `failed`.
+- `task` prints only the task ID, status, optional progress, and a redacted failure summary. `wait` polls `queued` and `in_progress`, saves images on `succeeded`, and stops on `failed`; task queries, polling sleeps, and result downloads share one deadline.
+- A custom API base must be a clean absolute HTTPS URL. Authenticated requests do not follow redirects, and diagnostic URLs omit userinfo, query, and fragment.
 - Asynchronous Base64 editing and Webhook receiving are outside this version.
