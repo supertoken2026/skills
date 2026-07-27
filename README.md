@@ -65,16 +65,20 @@ Windows PowerShell：
 py -3 skills/supertoken-gpt-image-2/scripts/setup.py
 ```
 
-脚本在 macOS 使用 Keychain，在 Windows 使用 DPAPI，在安装了 `secret-tool` 的 Linux 环境使用 Secret Service。找不到系统安全存储时，不会自动保存明文 Key。资源 Key 可通过 `--resource-api-key` 选项单独保存；只做同步工作时无需配置。
+脚本在 macOS 使用 Keychain，在 Windows 使用 DPAPI，在安装了 `secret-tool` 的 Linux 环境使用 Secret Service。找不到系统安全存储时，不会自动保存明文 Key。脚本会隐藏提示模型 Token；只做同步工作时无需资源 Key。需要查询任务时，按下文将资源 Key 隐藏输入到环境变量，不要把 Key 写进命令参数。
 
 运行时先读取对应环境变量，再读取系统安全存储。只有系统安全存储不可用且明确传入 `--allow-plaintext-key-store` 时，才会把 Key 写入本地明文凭据文件；POSIX 系统会将该文件权限设为 `0600`。
 
-如果只想在当前 macOS 或 Linux shell 中使用环境变量：
+如果只想在当前 Bash 或 zsh 中使用环境变量：
 
 ```bash
-read -rsp "SuperToken Model API Token: " SUPERTOKEN_API_KEY
+printf "SuperToken Model API Token: " >&2
+IFS= read -r -s SUPERTOKEN_API_KEY
+printf "\n" >&2
 export SUPERTOKEN_API_KEY
-read -rsp "SuperToken Resource API Key: " SUPERTOKEN_RESOURCE_API_KEY
+printf "SuperToken Resource API Key: " >&2
+IFS= read -r -s SUPERTOKEN_RESOURCE_API_KEY
+printf "\n" >&2
 export SUPERTOKEN_RESOURCE_API_KEY
 ```
 
@@ -263,16 +267,20 @@ On Windows PowerShell:
 py -3 skills/supertoken-gpt-image-2/scripts/setup.py
 ```
 
-The script uses Keychain on macOS, DPAPI on Windows, and Secret Service on Linux when `secret-tool` is installed. It never falls back silently to plaintext. Add a resource Key separately with `--resource-api-key`; sync-only use does not need one.
+The script uses Keychain on macOS, DPAPI on Windows, and Secret Service on Linux when `secret-tool` is installed. It never falls back silently to plaintext. The script prompts securely for the model Token. Sync-only use does not need a resource Key; for task queries, enter it into the environment with the hidden-input example below instead of placing it in a command argument.
 
 At runtime, each environment variable takes precedence over its operating-system credential-store entry. Plaintext storage is used only when the secure store is unavailable and `--allow-plaintext-key-store` is explicit. On POSIX systems, that local file uses mode `0600`.
 
-For environment variables limited to the current macOS or Linux shell:
+For environment variables limited to the current Bash or zsh session:
 
 ```bash
-read -rsp "SuperToken Model API Token: " SUPERTOKEN_API_KEY
+printf "SuperToken Model API Token: " >&2
+IFS= read -r -s SUPERTOKEN_API_KEY
+printf "\n" >&2
 export SUPERTOKEN_API_KEY
-read -rsp "SuperToken Resource API Key: " SUPERTOKEN_RESOURCE_API_KEY
+printf "SuperToken Resource API Key: " >&2
+IFS= read -r -s SUPERTOKEN_RESOURCE_API_KEY
+printf "\n" >&2
 export SUPERTOKEN_RESOURCE_API_KEY
 ```
 

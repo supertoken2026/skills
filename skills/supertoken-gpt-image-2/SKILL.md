@@ -32,7 +32,7 @@ macOS 和 Linux 使用 `python3`，Windows 使用 `py -3`。先定位此 `SKILL.
 python3 scripts/setup.py
 ```
 
-资源 Key 可保留在 `SUPERTOKEN_RESOURCE_API_KEY`，或通过 `setup.py --resource-api-key VALUE` 单独保存。
+资源 Key 从 `SUPERTOKEN_RESOURCE_API_KEY` 读取。设置时使用 README 中兼容 Bash 和 zsh 的隐藏输入方式，不要把 Key 写进命令参数。
 
 不要把真实 Key 写进文档、提交、Issue 或命令示例。
 
@@ -118,7 +118,7 @@ python3 scripts/supertoken_image.py wait task_example123 \
 ## 结果与失败处理
 
 - 同步请求和 `--async --wait` 会保存所有返回图片。成功后向用户报告模型、存在时的任务 ID，以及 `outputs[]` 中每个绝对路径。
-- 多图结果按 `name-1.png`、`name-2.png` 依次命名。脚本根据文件内容修正扩展名，并通过 `.part` 文件原子保存。
+- 多图结果按 `name-1.ext`、`name-2.ext` 依次命名；扩展名根据内容确定为 `.png`、`.jpeg` 或 `.webp`。文件通过 `.part` 原子保存。
 - 同步生成、同步编辑和异步创建的 POST 不自动重试。手动重试同一个异步请求时，复用原来的 `Idempotency-Key`；不同请求使用新键。
 - `task` 只查询一次；`wait` 会轮询 `queued` 和 `in_progress`，在 `succeeded` 时保存图片，在 `failed` 时停止。
 - 异步 Base64 编辑和 Webhook 接收不在本版范围内。
@@ -152,7 +152,7 @@ Configure the model Token securely:
 python3 scripts/setup.py
 ```
 
-Keep the resource Key in `SUPERTOKEN_RESOURCE_API_KEY`, or store it separately with `setup.py --resource-api-key VALUE`.
+The resource Key is read from `SUPERTOKEN_RESOURCE_API_KEY`. Set it with the hidden-input Bash/zsh flow in the README, never as a command argument.
 
 Never put a real key in documentation, commits, issues, or command examples.
 
@@ -238,7 +238,7 @@ python3 scripts/supertoken_image.py wait task_example123 \
 ### Results and failures
 
 - Synchronous requests and `--async --wait` save every returned image. Report the model, the task ID when present, and every absolute path in `outputs[]`.
-- Multiple results are named `name-1.png`, `name-2.png`, and so on. The script corrects the suffix from the file content and saves atomically through a `.part` file.
+- Multiple results are named `name-1.ext`, `name-2.ext`, and so on; content determines whether the suffix is `.png`, `.jpeg`, or `.webp`. Files are saved atomically through `.part`.
 - Generation, edit, and task-creation POST requests are never retried automatically. A manual retry of the same asynchronous request must reuse its original `Idempotency-Key`; a different request needs a new key.
 - `task` queries once. `wait` polls `queued` and `in_progress`, saves images on `succeeded`, and stops on `failed`.
 - Asynchronous Base64 editing and Webhook receiving are outside this version.
