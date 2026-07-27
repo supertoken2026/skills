@@ -280,7 +280,7 @@ jobs:
               test "$(realpath "$claude_dir")" = "$skill_dir"
             fi
           done
-          v01_global_commit="$(git rev-parse 'v0.1.0^{commit}')"
+          v01_global_commit="$(git -C "$GITHUB_WORKSPACE" rev-parse 'v0.1.0^{commit}')"
           upgrade_project="$RUNNER_TEMP/v01-upgrade-project"
           mkdir -p "$upgrade_project"
           cd "$upgrade_project"
