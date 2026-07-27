@@ -154,6 +154,87 @@ class SupertokenConfigTests(unittest.TestCase):
                 mode = stat.S_IMODE(credential_path.stat().st_mode)
                 self.assertEqual(mode, 0o600)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX permission behavior")
+    def test_plaintext_credentials_use_private_unique_temp_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "config"
+            config_dir.mkdir(mode=0o755)
+            config_dir.chmod(0o755)
+            credential_path = config_dir / "credentials.json"
+            stale_part = Path(f"{credential_path}.part")
+            stale_part.write_text("leave this alone", encoding="utf-8")
+            observed_parts = []
+            real_replace = os.replace
+
+            def inspect_replace(source, destination):
+                source = Path(source)
+                destination = Path(destination)
+                if destination == credential_path:
+                    observed_parts.append(source)
+                    self.assertEqual(stat.S_IMODE(config_dir.stat().st_mode), 0o700)
+                    self.assertEqual(stat.S_IMODE(source.stat().st_mode), 0o600)
+                return real_replace(source, destination)
+
+            environment = {
+                config.CONFIG_DIR_ENV: str(config_dir),
+                config.DISABLE_SECURE_STORE_ENV: "1",
+            }
+            previous_umask = os.umask(0o022)
+            try:
+                with patch.dict(os.environ, environment, clear=False):
+                    with patch.object(config.os, "replace", side_effect=inspect_replace):
+                        config.save_api_key("model-secret", allow_plaintext=True)
+                        config.save_api_key(
+                            "resource-secret", allow_plaintext=True,
+                            kind=config.RESOURCE_KEY,
+                        )
+            finally:
+                os.umask(previous_umask)
+
+            self.assertEqual(len(observed_parts), 2)
+            self.assertEqual(len(set(observed_parts)), 2)
+            self.assertNotIn(stale_part, observed_parts)
+            self.assertEqual(stale_part.read_text(encoding="utf-8"), "leave this alone")
+            self.assertEqual(stat.S_IMODE(credential_path.stat().st_mode), 0o600)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX fsync behavior")
+    def test_plaintext_write_failure_cleans_only_its_private_temp_file(self):
+        secret = "model-secret"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "config"
+            environment = {
+                config.CONFIG_DIR_ENV: str(config_dir),
+                config.DISABLE_SECURE_STORE_ENV: "1",
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                with patch.object(config.os, "fsync", side_effect=OSError("sync failed")):
+                    with self.assertRaisesRegex(OSError, "sync failed") as raised:
+                        config.save_api_key(secret, allow_plaintext=True)
+
+            self.assertNotIn(secret, str(raised.exception))
+            self.assertEqual(list(config_dir.glob(".credentials.json.*")), [])
+            self.assertFalse((config_dir / "credentials.json").exists())
+
+    @unittest.skipUnless(os.name == "posix", "POSIX replace behavior")
+    def test_plaintext_replace_failure_cleans_temp_without_exposing_key(self):
+        secret = "model-secret"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "config"
+            environment = {
+                config.CONFIG_DIR_ENV: str(config_dir),
+                config.DISABLE_SECURE_STORE_ENV: "1",
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                with patch.object(
+                    config.os, "replace", side_effect=OSError("replace failed")
+                ):
+                    with self.assertRaisesRegex(OSError, "replace failed") as raised:
+                        config.save_api_key(secret, allow_plaintext=True)
+
+            self.assertNotIn(secret, str(raised.exception))
+            self.assertEqual(list(config_dir.glob(".credentials.json.*")), [])
+            self.assertFalse((config_dir / "credentials.json").exists())
+
     def test_save_api_key_persists_only_the_normalized_value(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             environment = {

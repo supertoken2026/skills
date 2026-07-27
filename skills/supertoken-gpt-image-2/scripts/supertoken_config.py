@@ -10,6 +10,7 @@ import platform
 import re
 import shutil
 import subprocess
+import tempfile
 import unicodedata
 import urllib.parse
 from dataclasses import dataclass
@@ -175,13 +176,20 @@ def plaintext_credentials_path():
 
 def _atomic_write_text(path, text, mode=None):
     path.parent.mkdir(parents=True, exist_ok=True)
-    part = Path(f"{path}.part")
-    part.unlink(missing_ok=True)
+    if mode is not None and os.name == "posix":
+        path.parent.chmod(0o700)
+    descriptor, raw_part = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    part = Path(raw_part)
     try:
-        part.write_text(text, encoding="utf-8")
         if mode is not None and os.name == "posix":
-            part.chmod(mode)
-        part.replace(path)
+            os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(part, path)
     finally:
         part.unlink(missing_ok=True)
 
