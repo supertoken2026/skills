@@ -142,6 +142,107 @@ def build_generation_payload(args):
     return payload
 
 
+@dataclass(frozen=True)
+class EditInputs:
+    kind: str
+    values: list
+    mask: object | None
+
+
+def classify_edit_inputs(image_values, base64_files, mask_value, async_mode):
+    families = {"local": [], "url": [], "base64": []}
+
+    def append_base64(encoded):
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise api.ApiUsageError("Base64 图片内容无效。") from exc
+        if len(decoded) > api.MAX_FILE_BYTES:
+            raise api.ApiUsageError("单个 Base64 图片不能超过 20 MiB。")
+        api.detect_image_format(decoded[:12])
+        families["base64"].append(encoded)
+
+    for raw_value in image_values:
+        parsed = urllib.parse.urlparse(raw_value)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            families["url"].append(raw_value)
+        elif raw_value.startswith("data:image/") and ";base64," in raw_value:
+            append_base64(raw_value.split(";base64,", 1)[1])
+        else:
+            path = Path(raw_value).expanduser()
+            try:
+                exists = path.exists()
+            except OSError as exc:
+                raise api.ApiUsageError(f"无法识别图片输入：{raw_value}。") from exc
+            if not exists:
+                raise api.ApiUsageError(f"无法识别图片输入：{raw_value}。")
+            families["local"].append(path)
+
+    for raw_path in base64_files:
+        path = Path(raw_path).expanduser()
+        try:
+            encoded = path.read_text(encoding="utf-8").strip()
+            if encoded.startswith("data:image/") and ";base64," in encoded:
+                encoded = encoded.split(";base64,", 1)[1]
+            append_base64(encoded)
+        except (binascii.Error, OSError, UnicodeError, ValueError) as exc:
+            if isinstance(exc, api.ApiUsageError):
+                raise
+            raise api.ApiUsageError(f"无法读取或解析 Base64 图片文件：{path}。") from exc
+
+    if sum(len(values) for values in families.values()) > api.MAX_IMAGES:
+        raise api.ApiUsageError("参考图片最多 10 张。")
+    used = [name for name, values in families.items() if values]
+    if len(used) != 1:
+        raise api.ApiUsageError("一次编辑只能使用本地文件、URL 或 Base64 中的一种。")
+    kind = used[0]
+    if async_mode and kind == "base64":
+        raise api.ApiUsageError("异步编辑暂不支持 Base64；请改用同步编辑或先预上传。")
+
+    mask = None
+    if mask_value:
+        parsed_mask = urllib.parse.urlparse(mask_value)
+        if kind == "local":
+            mask_path = Path(mask_value).expanduser()
+            try:
+                mask_exists = mask_path.exists()
+            except OSError as exc:
+                raise api.ApiUsageError("同步 Mask 必须是本地文件；异步 URL 编辑可使用 URL Mask。") from exc
+            if mask_exists:
+                mask = api.validate_local_images([mask_path])[0]
+            else:
+                raise api.ApiUsageError("同步 Mask 必须是本地文件；异步 URL 编辑可使用 URL Mask。")
+        elif async_mode and kind == "url" and parsed_mask.scheme in {"http", "https"}:
+            mask = mask_value
+        else:
+            raise api.ApiUsageError("同步 Mask 必须是本地文件；异步 URL 编辑可使用 URL Mask。")
+
+    values = (
+        api.validate_local_images(families[kind]) if kind == "local"
+        else families[kind]
+    )
+    if kind == "local" and mask:
+        total = sum(item.size for item in values) + mask.size
+        if total > api.MAX_MULTIPART_BYTES:
+            raise api.ApiUsageError("包括 Mask 在内的 multipart 文件总量不能超过 100 MiB。")
+    return EditInputs(kind, values, mask)
+
+
+def build_edit_payload(args):
+    payload = {
+        "model": args.model or DEFAULT_MODEL,
+        "prompt": args.prompt,
+        "size": args.size,
+        "quality": args.quality,
+    }
+    if args.output_format:
+        payload["output_format"] = args.output_format
+    if args.background:
+        payload["background"] = args.background
+    merge_extra_params(payload, args)
+    return payload
+
+
 def write_raw_diagnostic(path, body, *secrets):
     path = Path(path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -246,6 +347,41 @@ def run_sync_generate(args, base_url, api_key):
     }, ensure_ascii=False, indent=2))
 
 
+def run_sync_edit(args, base_url, api_key, inputs):
+    payload = build_edit_payload(args)
+    endpoint = api.endpoint_url(base_url, "/v1/images/edits")
+    if inputs.kind == "local":
+        files = [
+            api.MultipartFile("image", item.path, f"image/{item.format}")
+            for item in inputs.values
+        ]
+        if inputs.mask:
+            files.append(api.MultipartFile(
+                "mask", inputs.mask.path, f"image/{inputs.mask.format}",
+            ))
+        response = api.request_multipart(
+            "POST", endpoint, api_key, args.timeout, list(payload.items()), files,
+        )
+    else:
+        payload["image"] = (
+            [{"b64_json": encoded} for encoded in inputs.values]
+            if inputs.kind == "base64" else inputs.values
+        )
+        response = api.request_json(
+            "POST", endpoint, api_key, args.timeout, payload,
+        )
+    if args.raw_json:
+        write_raw_diagnostic(Path(args.raw_json), response.body, api_key)
+    data = require_success(response, MODEL_KEY, payload["model"], api_key)
+    saved = api.save_image_items(data.get("data"), Path(args.output), args.timeout)
+    print(json.dumps({
+        "mode": "sync",
+        "operation": "edit",
+        "model": payload["model"],
+        "outputs": output_rows(saved),
+    }, ensure_ascii=False, indent=2))
+
+
 def main(argv=None):
     args = parse_args(argv)
     try:
@@ -258,6 +394,14 @@ def main(argv=None):
                 raise api.ApiUsageError("异步图片生成将在后续版本提供。")
             _current, base_url, api_key = resolve_runtime(args)
             run_sync_generate(args, base_url, api_key)
+        elif args.command == "edit":
+            inputs = classify_edit_inputs(
+                args.image, args.image_base64_file, args.mask, args.async_mode,
+            )
+            if args.async_mode:
+                raise api.ApiUsageError("异步图片编辑将在后续版本提供。")
+            _current, base_url, api_key = resolve_runtime(args)
+            run_sync_edit(args, base_url, api_key, inputs)
         else:
             raise api.ApiUsageError("该命令将在后续版本提供。")
     except (ConfigError, api.ApiUsageError, ValueError, json.JSONDecodeError) as exc:

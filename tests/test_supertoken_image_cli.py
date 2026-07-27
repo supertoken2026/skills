@@ -296,3 +296,263 @@ class SyncGenerationTests(unittest.TestCase):
                         api.save_image_items([item], output, timeout=5)
                     self.assertFalse(output.exists())
                     self.assertFalse(Path(f"{output}.part").exists())
+
+
+class SyncEditTests(unittest.TestCase):
+    def test_url_edit_uses_the_sync_json_shape(self):
+        response = api_response({"data": [
+            {"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}
+        ]})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(cli.api, "request_json", return_value=response) as request:
+                code, stdout, stderr = run_cli([
+                    "edit", "--prompt", "combine",
+                    "--image", "https://img.example/one.png",
+                    "--image", "https://img.example/two.png",
+                    "--output", str(Path(temp_dir) / "result.png"),
+                ], {config.API_KEY_ENV: "test-key"})
+        self.assertEqual(code, 0, stderr)
+        payload = request.call_args.args[4]
+        self.assertEqual(payload["image"], [
+            "https://img.example/one.png", "https://img.example/two.png"
+        ])
+        self.assertEqual(json.loads(stdout)["operation"], "edit")
+
+    def test_data_url_and_base64_file_edit_use_json_objects(self):
+        encoded = base64.b64encode(PNG_BYTES).decode("ascii")
+        response = api_response({"data": [{"b64_json": encoded}]})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base64_file = Path(temp_dir) / "source.txt"
+            base64_file.write_text(encoded, encoding="utf-8")
+            with patch.object(cli.api, "request_json", return_value=response) as request:
+                code, _stdout, stderr = run_cli([
+                    "edit", "--prompt", "combine",
+                    "--image", f"data:image/png;base64,{encoded}",
+                    "--image-base64-file", str(base64_file),
+                    "--output", str(Path(temp_dir) / "result.png"),
+                ], {config.API_KEY_ENV: "test-key"})
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(request.call_args.args[4]["image"], [
+            {"b64_json": encoded}, {"b64_json": encoded},
+        ])
+
+    def test_long_data_url_is_classified_before_path_exists(self):
+        encoded = base64.b64encode(PNG_BYTES + (b"x" * 4096)).decode("ascii")
+        with patch.object(cli.Path, "exists", side_effect=AssertionError("path check")):
+            inputs = cli.classify_edit_inputs(
+                [f"data:image/png;base64,{encoded}"], [], None, False,
+            )
+
+        self.assertEqual(inputs.kind, "base64")
+        self.assertEqual(inputs.values, [encoded])
+
+    def test_invalid_base64_file_is_a_usage_error_without_a_traceback(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.txt"
+            source.write_text("not-base64%%", encoding="utf-8")
+            with patch.object(cli.api, "request_json") as json_request:
+                with patch.object(cli.api, "request_multipart") as multipart_request:
+                    code, _stdout, stderr = run_cli([
+                        "edit", "--prompt", "combine", "--image-base64-file", str(source),
+                        "--output", str(Path(temp_dir) / "result.png"),
+                    ], {config.API_KEY_ENV: "test-key"})
+
+        self.assertEqual(code, 2)
+        self.assertNotIn("Traceback", stderr)
+        json_request.assert_not_called()
+        multipart_request.assert_not_called()
+
+    def test_async_base64_is_rejected_by_the_shared_classifier(self):
+        encoded = base64.b64encode(PNG_BYTES).decode("ascii")
+
+        with self.assertRaisesRegex(api.ApiUsageError, "异步编辑暂不支持 Base64"):
+            cli.classify_edit_inputs(
+                [f"data:image/png;base64,{encoded}"], [], None, True,
+            )
+
+    def test_local_edit_repeats_multipart_image_fields(self):
+        response = api_response({"data": [
+            {"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}
+        ]})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first = Path(temp_dir) / "one.png"
+            second = Path(temp_dir) / "two.png"
+            first.write_bytes(PNG_BYTES)
+            second.write_bytes(PNG_BYTES)
+            with patch.object(cli.api, "request_multipart", return_value=response) as request:
+                code, _stdout, stderr = run_cli([
+                    "edit", "--prompt", "combine", "--image", str(first),
+                    "--image", str(second), "--output", str(Path(temp_dir) / "result.png"),
+                ], {config.API_KEY_ENV: "test-key"})
+
+        self.assertEqual(code, 0, stderr)
+        method, url, key, timeout, fields, files = request.call_args.args
+        self.assertEqual((method, url, key, timeout), (
+            "POST", "https://api.supertoken.cc/v1/images/edits", "test-key", 300,
+        ))
+        self.assertEqual([field for field, _value in fields], ["model", "prompt", "size", "quality"])
+        self.assertEqual([(item.field, item.content_type) for item in files], [
+            ("image", "image/png"), ("image", "image/png"),
+        ])
+        self.assertNotIn("Content-Type", request.call_args.kwargs)
+
+    def test_local_mask_is_sent_once(self):
+        response = api_response({"data": [
+            {"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}
+        ]})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            mask = Path(temp_dir) / "mask.png"
+            source.write_bytes(PNG_BYTES)
+            mask.write_bytes(PNG_BYTES)
+            with patch.object(cli.api, "request_multipart", return_value=response) as request:
+                code, _stdout, stderr = run_cli([
+                    "edit", "--prompt", "combine", "--image", str(source),
+                    "--mask", str(mask), "--output", str(Path(temp_dir) / "result.png"),
+                ], {config.API_KEY_ENV: "test-key"})
+
+        self.assertEqual(code, 0, stderr)
+        files = request.call_args.args[5]
+        self.assertEqual([item.field for item in files], ["image", "mask"])
+        self.assertEqual(files[1].content_type, "image/png")
+
+    def test_mixed_local_and_url_inputs_fail_before_request(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            local = Path(temp_dir) / "source.png"
+            local.write_bytes(PNG_BYTES)
+            with patch.object(cli.api, "request_json") as json_request:
+                with patch.object(cli.api, "request_multipart") as multipart_request:
+                    code, _, stderr = run_cli([
+                        "edit", "--prompt", "combine",
+                        "--image", str(local),
+                        "--image", "https://img.example/two.png",
+                        "--output", str(Path(temp_dir) / "result.png"),
+                    ], {config.API_KEY_ENV: "test-key"})
+        self.assertEqual(code, 2)
+        self.assertIn("一种", stderr)
+        json_request.assert_not_called()
+        multipart_request.assert_not_called()
+
+    def test_url_and_base64_inputs_fail_before_request(self):
+        encoded = base64.b64encode(PNG_BYTES).decode("ascii")
+        with patch.object(cli.api, "request_json") as json_request:
+            with patch.object(cli.api, "request_multipart") as multipart_request:
+                code, _stdout, stderr = run_cli([
+                    "edit", "--prompt", "combine", "--image", "https://img.example/one.png",
+                    "--image", f"data:image/png;base64,{encoded}", "--output", "result.png",
+                ], {config.API_KEY_ENV: "test-key"})
+
+        self.assertEqual(code, 2)
+        self.assertIn("一种", stderr)
+        json_request.assert_not_called()
+        multipart_request.assert_not_called()
+
+    def test_sync_url_mask_is_rejected(self):
+        with patch.object(cli.api, "request_json") as json_request:
+            with patch.object(cli.api, "request_multipart") as multipart_request:
+                code, _stdout, stderr = run_cli([
+                    "edit", "--prompt", "combine", "--image", "https://img.example/one.png",
+                    "--mask", "https://img.example/mask.png", "--output", "result.png",
+                ], {config.API_KEY_ENV: "test-key"})
+
+        self.assertEqual(code, 2)
+        self.assertIn("Mask", stderr)
+        json_request.assert_not_called()
+        multipart_request.assert_not_called()
+
+    def test_edit_rejects_more_than_ten_images(self):
+        images = ["https://img.example/%s.png" % index for index in range(11)]
+        with patch.object(cli.api, "request_json") as json_request:
+            with patch.object(cli.api, "request_multipart") as multipart_request:
+                code, _stdout, stderr = run_cli([
+                    "edit", "--prompt", "combine", *sum((["--image", item] for item in images), []),
+                    "--output", "result.png",
+                ], {config.API_KEY_ENV: "test-key"})
+
+        self.assertEqual(code, 2)
+        self.assertIn("10", stderr)
+        json_request.assert_not_called()
+        multipart_request.assert_not_called()
+
+    def test_edit_rejects_oversized_local_file_before_request(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "large.png"
+            source.write_bytes(PNG_BYTES)
+            source.touch()
+            with source.open("r+b") as stream:
+                stream.truncate(api.MAX_FILE_BYTES + 1)
+            with patch.object(cli.api, "request_json") as json_request:
+                with patch.object(cli.api, "request_multipart") as multipart_request:
+                    code, _stdout, stderr = run_cli([
+                        "edit", "--prompt", "combine", "--image", str(source),
+                        "--output", str(Path(temp_dir) / "result.png"),
+                    ], {config.API_KEY_ENV: "test-key"})
+
+        self.assertEqual(code, 2)
+        self.assertIn("20 MiB", stderr)
+        json_request.assert_not_called()
+        multipart_request.assert_not_called()
+
+    def test_edit_rejects_unknown_local_signature_before_request(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.bin"
+            source.write_bytes(b"not an image")
+            with patch.object(cli.api, "request_json") as json_request:
+                with patch.object(cli.api, "request_multipart") as multipart_request:
+                    code, _stdout, stderr = run_cli([
+                        "edit", "--prompt", "combine", "--image", str(source),
+                        "--output", str(Path(temp_dir) / "result.png"),
+                    ], {config.API_KEY_ENV: "test-key"})
+
+        self.assertEqual(code, 2)
+        self.assertIn("PNG", stderr)
+        json_request.assert_not_called()
+        multipart_request.assert_not_called()
+
+    def test_local_images_and_mask_over_multipart_limit_fail_before_request(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            images = []
+            for index in range(5):
+                image = Path(temp_dir) / f"image-{index}.png"
+                image.write_bytes(PNG_BYTES)
+                with image.open("r+b") as stream:
+                    stream.truncate(api.MAX_FILE_BYTES)
+                images.append(image)
+            mask = Path(temp_dir) / "mask.png"
+            mask.write_bytes(PNG_BYTES)
+            with mask.open("r+b") as stream:
+                stream.truncate(api.MAX_FILE_BYTES)
+            argv = ["edit", "--prompt", "combine", "--output", str(Path(temp_dir) / "result.png")]
+            for image in images:
+                argv.extend(["--image", str(image)])
+            argv.extend(["--mask", str(mask)])
+            with patch.object(cli.api, "request_json") as json_request:
+                with patch.object(cli.api, "request_multipart") as multipart_request:
+                    code, _stdout, stderr = run_cli(argv, {config.API_KEY_ENV: "test-key"})
+
+        self.assertEqual(code, 2)
+        self.assertIn("100 MiB", stderr)
+        json_request.assert_not_called()
+        multipart_request.assert_not_called()
+
+    def test_successful_edit_saves_every_item(self):
+        encoded = base64.b64encode(PNG_BYTES).decode("ascii")
+        response = api_response({"data": [{"b64_json": encoded}, {"b64_json": encoded}]})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "result.png"
+            with patch.object(cli.api, "request_json", return_value=response) as request:
+                code, stdout, stderr = run_cli([
+                    "edit", "--prompt", "combine", "--image", "https://img.example/one.png",
+                    "--output", str(output),
+                ], {config.API_KEY_ENV: "test-key"})
+
+            result = json.loads(stdout)
+            self.assertEqual(code, 0, stderr)
+            self.assertEqual(request.call_args.args[0:4], (
+                "POST", "https://api.supertoken.cc/v1/images/edits", "test-key", 300,
+            ))
+            self.assertEqual(result["operation"], "edit")
+            self.assertEqual(len(result["outputs"]), 2)
+            self.assertEqual(Path(result["outputs"][0]["path"]).read_bytes(), PNG_BYTES)
+            self.assertEqual(Path(result["outputs"][1]["path"]).read_bytes(), PNG_BYTES)
