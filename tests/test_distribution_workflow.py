@@ -114,6 +114,10 @@ class DistributionWorkflowTests(unittest.TestCase):
 
         commit_resolution = "v01_global_commit=\"$(git rev-parse 'v0.1.0^{commit}')\""
         self.assertIn(commit_resolution, text)
+        self.assertLess(
+            text.index(commit_resolution),
+            text.index('cd "$upgrade_project"'),
+        )
         global_start = text.index(commit_resolution)
         global_install = text.index('"supertoken2026/skills#v0.1.0"', global_start)
         global_commit_pin = text.index(
