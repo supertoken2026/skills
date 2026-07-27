@@ -157,6 +157,37 @@ class MultipartTests(unittest.TestCase):
                 with self.assertRaisesRegex(api.ApiUsageError, "20 MiB"):
                     api.encode_multipart([], [oversized])
 
+    def test_encode_multipart_checks_actual_bytes_from_subclasses(self):
+        class DeceptiveBytes(bytes):
+            def __len__(self):
+                return 1
+
+            def startswith(self, *_args, **_kwargs):
+                return True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            payload = DeceptiveBytes(PNG_BYTES + b"x")
+            item = api.MultipartFile("image", source, "image/png", payload)
+
+            with patch.object(api, "MAX_FILE_BYTES", len(PNG_BYTES)):
+                with self.assertRaisesRegex(api.ApiUsageError, "20 MiB"):
+                    api.encode_multipart([], [item])
+
+    def test_encode_multipart_checks_actual_signature_from_subclasses(self):
+        class DeceptiveBytes(bytes):
+            def startswith(self, *_args, **_kwargs):
+                return True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            item = api.MultipartFile(
+                "image", source, "image/png", DeceptiveBytes(b"not an image"),
+            )
+
+            with self.assertRaisesRegex(api.ApiUsageError, "PNG"):
+                api.encode_multipart([], [item])
+
     def test_encode_multipart_enforces_image_count(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "source.png"
