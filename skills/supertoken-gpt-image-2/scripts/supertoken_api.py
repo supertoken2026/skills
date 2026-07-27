@@ -31,7 +31,7 @@ class MultipartFile:
     field: str
     path: Path
     content_type: str
-    data: bytes | None = None
+    data: bytes
 
 
 class ApiUsageError(ValueError):
@@ -587,16 +587,9 @@ def encode_multipart(fields, files, boundary=None):
             image_count += 1
             if image_count > MAX_IMAGES:
                 raise ApiUsageError("参考图片最多 10 张。")
-        if item.data is None:
-            try:
-                with Path(item.path).open("rb") as stream:
-                    data = stream.read(MAX_FILE_BYTES + 1)
-            except OSError as exc:
-                raise ApiUsageError(f"无法读取图片文件：{item.path}。") from exc
-        elif isinstance(item.data, bytes):
-            data = item.data
-        else:
+        if not isinstance(item.data, bytes):
             raise ApiUsageError("multipart 图片内容必须是不可变字节。")
+        data = item.data
         if len(data) > MAX_FILE_BYTES:
             raise ApiUsageError(f"单个图片文件不能超过 20 MiB：{item.path}。")
         detect_image_format(data)

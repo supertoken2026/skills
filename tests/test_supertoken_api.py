@@ -91,8 +91,8 @@ class MultipartTests(unittest.TestCase):
             body, content_type = api.encode_multipart(
                 [("model", "gpt-image-2")],
                 [
-                    api.MultipartFile("image", first, "image/png"),
-                    api.MultipartFile("image", second, "image/png"),
+                    api.MultipartFile("image", first, "image/png", PNG_BYTES),
+                    api.MultipartFile("image", second, "image/png", PNG_BYTES),
                 ],
                 boundary="test-boundary",
             )
@@ -127,19 +127,32 @@ class MultipartTests(unittest.TestCase):
         self.assertNotIn(replacement, body)
         self.assertIn(b'filename="source.png"', body)
 
+    def test_multipart_file_requires_immutable_snapshot_bytes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            source.write_bytes(PNG_BYTES)
+
+            with self.assertRaises(TypeError):
+                api.MultipartFile("image", source, "image/png")
+
     def test_encode_multipart_rejects_invalid_signature_bytes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "source.png"
             source.write_bytes(b"not an image")
-            invalid = api.MultipartFile("image", source, "image/png")
+            invalid = api.MultipartFile(
+                "image", source, "image/png", b"not an image",
+            )
             with self.assertRaisesRegex(api.ApiUsageError, "PNG"):
                 api.encode_multipart([], [invalid])
 
     def test_encode_multipart_rejects_oversized_bytes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "source.png"
-            source.write_bytes(PNG_BYTES + b"x" * 8)
-            oversized = api.MultipartFile("image", source, "image/png")
+            oversized_data = PNG_BYTES + b"x" * 8
+            source.write_bytes(oversized_data)
+            oversized = api.MultipartFile(
+                "image", source, "image/png", oversized_data,
+            )
             with patch.object(api, "MAX_FILE_BYTES", len(PNG_BYTES) + 7):
                 with self.assertRaisesRegex(api.ApiUsageError, "20 MiB"):
                     api.encode_multipart([], [oversized])
@@ -149,7 +162,7 @@ class MultipartTests(unittest.TestCase):
             source = Path(temp_dir) / "source.png"
             source.write_bytes(PNG_BYTES)
             files = [
-                api.MultipartFile("image", source, "image/png")
+                api.MultipartFile("image", source, "image/png", PNG_BYTES)
                 for _index in range(api.MAX_IMAGES + 1)
             ]
             with self.assertRaisesRegex(api.ApiUsageError, "最多 10 张"):
@@ -161,8 +174,8 @@ class MultipartTests(unittest.TestCase):
             padded = PNG_BYTES + b"x" * 4
             source.write_bytes(padded)
             files = [
-                api.MultipartFile("image", source, "image/png"),
-                api.MultipartFile("mask", source, "image/png"),
+                api.MultipartFile("image", source, "image/png", padded),
+                api.MultipartFile("mask", source, "image/png", padded),
             ]
             with patch.object(api, "MAX_FILE_BYTES", len(padded)):
                 with patch.object(api, "MAX_MULTIPART_BYTES", len(padded) * 2 - 1):
@@ -419,7 +432,7 @@ class RequestTests(unittest.TestCase):
                     "test-api-key",
                     30,
                     [("model", "gpt-image-2")],
-                    [api.MultipartFile("image", image, "image/png")],
+                    [api.MultipartFile("image", image, "image/png", PNG_BYTES)],
                 )
 
         request = urlopen.call_args.args[0]
