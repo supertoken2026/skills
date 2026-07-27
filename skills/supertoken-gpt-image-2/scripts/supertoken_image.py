@@ -476,6 +476,16 @@ def retry_delay(value, fallback=2):
     return max(2, min(30, parsed))
 
 
+def terminal_task_error(task_id, exc, resource_key):
+    detail = api.sanitize_diagnostic(
+        str(exc).encode("utf-8"), resource_key
+    )
+    error = api.ApiResponseError(f"任务 {task_id} 查询终止：{detail}")
+    error.status = getattr(exc, "status", None)
+    error.headers = getattr(exc, "headers", {})
+    return error
+
+
 def query_task(base_url, resource_key, task_id, timeout):
     if not re.fullmatch(r"task_[A-Za-z0-9_-]+", task_id):
         raise api.ApiUsageError("任务 ID 格式无效。")
@@ -514,18 +524,18 @@ def poll_task(
         try:
             task, headers = query_task(base_url, resource_key, task_id, timeout)
             consecutive_failures = 0
-        except urllib.error.URLError:
+        except urllib.error.URLError as exc:
             consecutive_failures += 1
             if consecutive_failures > 3:
-                raise
+                raise terminal_task_error(task_id, exc, resource_key) from exc
             sleep(interval)
             continue
         except api.ApiResponseError as exc:
             if getattr(exc, "status", None) not in {429, 502, 503}:
-                raise
+                raise terminal_task_error(task_id, exc, resource_key) from exc
             consecutive_failures += 1
             if consecutive_failures > 3:
-                raise
+                raise terminal_task_error(task_id, exc, resource_key) from exc
             retry_after = api.header_value(
                 getattr(exc, "headers", {}), "Retry-After", interval
             )

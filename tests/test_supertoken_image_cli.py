@@ -621,14 +621,17 @@ class AsyncTaskTests(unittest.TestCase):
     def test_local_async_edit_uses_documented_multipart_fields(self):
         response = api_response({"id": "task_local", "status": "queued"}, 202)
         with tempfile.TemporaryDirectory() as temp_dir:
-            source = Path(temp_dir) / "source.png"
+            first = Path(temp_dir) / "first.png"
+            second = Path(temp_dir) / "second.png"
             mask = Path(temp_dir) / "mask.png"
-            source.write_bytes(PNG_BYTES)
+            first.write_bytes(PNG_BYTES)
+            second.write_bytes(PNG_BYTES)
             mask.write_bytes(PNG_BYTES)
             with patch.object(cli.api, "request_multipart", return_value=response) as request:
                 code, stdout, stderr = run_cli([
                     "edit", "--async", "--prompt", "combine",
-                    "--image", str(source), "--mask", str(mask),
+                    "--image", str(first), "--image", str(second),
+                    "--mask", str(mask),
                     "--model", "gpt-image-2", "--n", "2",
                     "--format", "webp", "--background", "opaque",
                     "--output-compression", "72",
@@ -651,7 +654,9 @@ class AsyncTaskTests(unittest.TestCase):
             ("client_reference_id", "client-local"),
             ("metadata", '{"source": "studio"}'),
         ])
-        self.assertEqual([item.field for item in files], ["image", "mask"])
+        self.assertEqual(
+            [item.field for item in files], ["image", "image", "mask"]
+        )
         self.assertEqual(request.call_args.kwargs["headers"], {
             "Idempotency-Key": "idem-local",
         })
@@ -761,6 +766,23 @@ class AsyncTaskTests(unittest.TestCase):
         self.assertEqual(cli.retry_delay("1"), 2)
         self.assertEqual(cli.retry_delay("60"), 30)
 
+    def test_polling_missing_or_invalid_retry_after_keeps_current_interval(self):
+        sleeps = []
+        sequence = [
+            ({"id": "task_interval", "status": "queued"}, {"Retry-After": "7"}),
+            ({"id": "task_interval", "status": "in_progress"}, {}),
+            ({"id": "task_interval", "status": "in_progress"},
+             {"Retry-After": "not-an-int"}),
+            ({"id": "task_interval", "status": "succeeded"}, {}),
+        ]
+        with patch.object(cli, "query_task", side_effect=sequence):
+            result = cli.poll_task(
+                "https://api.example", "resource-key", "task_interval", 5, 100,
+                sleep=sleeps.append, monotonic=lambda: 0,
+            )
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(sleeps, [7, 7, 7])
+
     def test_task_failed_redacts_server_supplied_credentials(self):
         error = cli.TaskFailed(
             {
@@ -833,12 +855,25 @@ class AsyncTaskTests(unittest.TestCase):
         for error in cases:
             with self.subTest(error=error):
                 with patch.object(cli, "query_task", side_effect=[error] * 4) as query:
-                    with self.assertRaises(type(error)):
+                    with self.assertRaises(api.ApiResponseError) as raised:
                         cli.poll_task(
                             "https://api.example", "resource-key", "task_retry", 5, 100,
                             sleep=lambda _seconds: None, monotonic=lambda: 0,
                         )
                 self.assertEqual(query.call_count, 4)
+                self.assertIn("task_retry", str(raised.exception))
+
+    def test_malformed_successful_task_response_retains_task_id(self):
+        response = api.ApiResponse(200, {}, b"not-json")
+        with patch.object(cli.api, "request_json", return_value=response) as request:
+            with self.assertRaises(api.ApiResponseError) as raised:
+                cli.poll_task(
+                    "https://api.example", "resource-key", "task_malformed", 5, 100,
+                    sleep=lambda _seconds: None, monotonic=lambda: 0,
+                )
+        self.assertEqual(request.call_count, 1)
+        self.assertIn("task_malformed", str(raised.exception))
+        self.assertIn("非 JSON", str(raised.exception))
 
     def test_query_rejects_invalid_ids_and_non_transient_http_fails_immediately(self):
         with patch.object(cli.api, "request_json") as request:
