@@ -33,6 +33,17 @@ from supertoken_config import (
 )
 
 
+def configure_console_encoding():
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, ValueError):
+            pass
+
+
 MAX_BASE64_FILE_BYTES = (
     4 * ((api.MAX_FILE_BYTES + 2) // 3)
     + len(b"data:image/jpeg;base64,")
@@ -1016,6 +1027,7 @@ def run_wait_command(args, base_url, resource_key):
 
 
 def main(argv=None, legacy_output=False):
+    configure_console_encoding()
     args = parse_args(argv)
     active_secrets = []
     try:

@@ -512,10 +512,13 @@ class SupertokenConfigTests(unittest.TestCase):
 
 class LegacyGeneratorCompatibilityTests(unittest.TestCase):
     def test_legacy_help_exposes_only_v01_options(self):
+        environment = os.environ.copy()
+        environment["PYTHONIOENCODING"] = "cp1252"
         result = subprocess.run(
             [sys.executable, str(SCRIPTS_DIR / "generate_image.py"), "--help"],
             text=True,
             capture_output=True,
+            env=environment,
             check=False,
         )
 
