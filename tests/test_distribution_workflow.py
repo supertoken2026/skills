@@ -98,7 +98,8 @@ class DistributionWorkflowTests(unittest.TestCase):
 
         project_start = text.index('npx --yes skills@1.5.19 add "supertoken2026/skills#v0.1.0"')
         project_retarget = text.index(
-            'set_github_lock_ref "$upgrade_project/skills-lock.json"', project_start
+            'set_github_lock_ref "$upgrade_project/skills-lock.json" "$CANDIDATE_REF"',
+            project_start,
         )
         project_pinned_update = text.index(
             'npx --yes skills@1.5.19 update -p -y supertoken-gpt-image-2',
@@ -188,6 +189,10 @@ class DistributionWorkflowTests(unittest.TestCase):
         )
         self.assertIn('target_ref = os.environ["TARGET_REF"] or None', text)
         self.assertIn('local target_ref="$2"', text)
+        self.assertIn('candidate_update_ref="$CANDIDATE_REF"', text)
+        self.assertIn('candidate_update_ref="$GITHUB_HEAD_REF"', text)
+        self.assertIn('set_github_lock_ref "$upgrade_project/skills-lock.json" "$candidate_update_ref"', text)
+        self.assertIn('set_github_lock_ref "$global_lock" "$candidate_update_ref"', text)
         self.assertIn('assert entry["source"] == "supertoken2026/skills", entry', text)
         self.assertIn('assert entry["sourceType"] == "github", entry', text)
         self.assertIn(

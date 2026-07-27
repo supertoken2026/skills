@@ -196,6 +196,13 @@ jobs:
           path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
           PY
           }
+          candidate_update_ref="$CANDIDATE_REF"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            # skills@1.5.19 passes refs to git clone --branch; use the PR
+            # branch for the smoke and restore the immutable SHA afterward.
+            test -n "$GITHUB_HEAD_REF"
+            candidate_update_ref="$GITHUB_HEAD_REF"
+          fi
           smoke_upgraded_cli() {
             local skill_dir="$1"
             python "$skill_dir/scripts/supertoken_image.py" --help
@@ -308,9 +315,10 @@ jobs:
           npx --yes skills@1.5.19 update -p -y supertoken-gpt-image-2
           assert_github_lock_identity "$upgrade_project/skills-lock.json" "v0.1.0"
           assert_v01_skill_files "$upgrade_skill_dir"
-          set_github_lock_ref "$upgrade_project/skills-lock.json" "$CANDIDATE_REF"
-          assert_github_lock_identity "$upgrade_project/skills-lock.json" "$CANDIDATE_REF"
+          set_github_lock_ref "$upgrade_project/skills-lock.json" "$candidate_update_ref"
+          assert_github_lock_identity "$upgrade_project/skills-lock.json" "$candidate_update_ref"
           npx --yes skills@1.5.19 update -p -y supertoken-gpt-image-2
+          set_github_lock_ref "$upgrade_project/skills-lock.json" "$CANDIDATE_REF"
           assert_github_lock_identity "$upgrade_project/skills-lock.json" "$CANDIDATE_REF"
           hash_required_skill_files "$upgrade_skill_dir" \
             > "$RUNNER_TEMP/upgraded-skill-files.sha256"
@@ -355,10 +363,11 @@ jobs:
           assert_github_lock_identity "$global_lock" "$v01_global_commit"
           assert_v01_skill_files "$global_upgrade_skill_dir"
           test "$(realpath "$global_claude_dir")" = "$global_upgrade_skill_dir"
-          set_github_lock_ref "$global_lock" "$CANDIDATE_REF"
-          assert_github_lock_identity "$global_lock" "$CANDIDATE_REF"
+          set_github_lock_ref "$global_lock" "$candidate_update_ref"
+          assert_github_lock_identity "$global_lock" "$candidate_update_ref"
           HOME="$v01_global_home" npx --yes skills@1.5.19 update -g -y \
             supertoken-gpt-image-2
+          set_github_lock_ref "$global_lock" "$CANDIDATE_REF"
           assert_github_lock_identity "$global_lock" "$CANDIDATE_REF"
           hash_required_skill_files "$global_upgrade_skill_dir" \
             > "$RUNNER_TEMP/global-upgraded-skill-files.sha256"
