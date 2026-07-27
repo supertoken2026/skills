@@ -90,7 +90,11 @@ class DistributionWorkflowTests(unittest.TestCase):
 
         self.assertIn("v01_skill_files=(", text)
         self.assertIn("assert_v01_skill_files()", text)
-        self.assertIn('git show "v0.1.0:skills/supertoken-gpt-image-2/$path"', text)
+        self.assertIn(
+            'git -C "$GITHUB_WORKSPACE" show '
+            '"v0.1.0:skills/supertoken-gpt-image-2/$path"',
+            text,
+        )
 
         project_start = text.index('npx --yes skills@1.5.19 add "supertoken2026/skills#v0.1.0"')
         project_retarget = text.index(
