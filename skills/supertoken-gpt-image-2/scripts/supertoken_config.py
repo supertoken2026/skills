@@ -185,13 +185,19 @@ def _atomic_write_text(path, text, mode=None):
     try:
         if mode is not None and os.name == "posix":
             os.fchmod(descriptor, mode)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream = os.fdopen(descriptor, "w", encoding="utf-8")
+        descriptor = None
+        with stream:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(part, path)
     finally:
-        part.unlink(missing_ok=True)
+        try:
+            if descriptor is not None:
+                os.close(descriptor)
+        finally:
+            part.unlink(missing_ok=True)
 
 
 def build_config(base_url=DEFAULT_BASE_URL, model=DEFAULT_MODEL):
