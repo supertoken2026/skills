@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 import sys
@@ -5,7 +6,7 @@ import tempfile
 import urllib.error
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 SCRIPTS_DIR = (
@@ -17,6 +18,10 @@ SCRIPTS_DIR = (
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import supertoken_api as api  # noqa: E402
+
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\nimage"
+JPEG_BYTES = b"\xff\xd8\xffimage"
 
 
 class FakeResponse:
@@ -240,6 +245,7 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(response.status, 429)
         self.assertEqual(response.headers, {"X-Request-ID": "request-123"})
         self.assertEqual(response.body, b'{"error": "limited"}')
+        self.assertTrue(error.fp.closed)
         self.assertEqual(urlopen.call_count, 1)
 
     def test_url_error_propagates_without_retry(self):
@@ -257,3 +263,59 @@ class RequestTests(unittest.TestCase):
                 )
 
         self.assertEqual(urlopen.call_count, 1)
+
+
+class ImageValidationAndOutputTests(unittest.TestCase):
+    def test_validate_local_images_enforces_count_and_size(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = []
+            for index in range(11):
+                path = Path(temp_dir) / f"{index}.png"
+                path.write_bytes(PNG_BYTES)
+                paths.append(path)
+            with self.assertRaisesRegex(api.ApiUsageError, "最多 10 张"):
+                api.validate_local_images(paths)
+
+            oversized = Path(temp_dir) / "oversized.png"
+            with oversized.open("wb") as stream:
+                stream.write(PNG_BYTES)
+                stream.seek(api.MAX_FILE_BYTES)
+                stream.write(b"x")
+            with self.assertRaisesRegex(api.ApiUsageError, "20 MiB"):
+                api.validate_local_images([oversized])
+
+    def test_save_image_items_names_every_result(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            items = [
+                {"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")},
+                {"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")},
+            ]
+            saved = api.save_image_items(items, Path(temp_dir) / "result.png", 5)
+        self.assertEqual(
+            [item.path.name for item in saved],
+            ["result-1.png", "result-2.png"],
+        )
+
+    def test_save_image_items_corrects_a_mismatched_suffix(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            item = {"b64_json": base64.b64encode(JPEG_BYTES).decode("ascii")}
+            saved = api.save_image_items([item], Path(temp_dir) / "result.png", 5)
+        self.assertEqual(saved[0].path.name, "result.jpeg")
+
+    def test_save_image_items_removes_part_file_after_write_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "result.png"
+            item = {"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}
+            with patch.object(Path, "stat", return_value=MagicMock(st_size=0)):
+                with self.assertRaisesRegex(api.ApiResponseError, "为空"):
+                    api.save_image_items([item], output, 5)
+
+            self.assertFalse((Path(temp_dir) / "result.png.part").exists())
+
+    def test_download_rejects_a_redirect_to_http(self):
+        response = MagicMock()
+        response.geturl.return_value = "http://cdn.example/image.png"
+        response.__enter__.return_value = response
+        with patch.object(api.urllib.request, "urlopen", return_value=response):
+            with self.assertRaisesRegex(api.ApiResponseError, "HTTPS"):
+                api.download_image("https://cdn.example/start", 5)
