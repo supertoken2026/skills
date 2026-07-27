@@ -360,6 +360,38 @@ class SyncGenerationTests(unittest.TestCase):
                 },
             )
 
+    def test_success_output_redacts_credential_shaped_model_and_path(self):
+        secret = "sk-outputsecret123"
+        response = api_response({
+            "data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]
+        })
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / f"{secret}.png"
+            with patch.object(cli.api, "request_json", return_value=response):
+                code, stdout, stderr = run_cli([
+                    "generate", "--prompt", "cat", "--model", secret,
+                    "--output", str(output),
+                ], {config.API_KEY_ENV: "test-key"})
+
+        self.assertEqual(code, 0, stderr)
+        self.assertNotIn(secret, stdout)
+        self.assertNotIn(secret, stderr)
+        result = json.loads(stdout)
+        self.assertEqual(result["model"], "[REDACTED]")
+        self.assertNotIn(secret, result["outputs"][0]["path"])
+
+    def test_usage_errors_redact_credential_shaped_arguments(self):
+        secret = "sk-inputsecret123"
+        code, stdout, stderr = run_cli([
+            "edit", "--prompt", "combine", "--image", secret,
+            "--output", "result.png",
+        ], {config.API_KEY_ENV: "test-key"})
+
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertNotIn(secret, stderr)
+        self.assertIn("[REDACTED]", stderr)
+
     def test_signed_result_url_is_not_reported(self):
         signed_url = "https://cdn.example.test/image.png?token=secret-signed-value"
         response = api_response({"data": [{"url": signed_url}]})
@@ -1098,6 +1130,21 @@ class AsyncTaskTests(unittest.TestCase):
         self.assertEqual(stdout, "")
         self.assertNotIn(active_key, stderr)
         self.assertIn("[REDACTED]", stderr)
+
+    def test_async_create_redacts_credential_shaped_model(self):
+        secret = "sk-asyncoutputsecret123"
+        response = api_response(
+            {"id": "task_async_safe_model", "status": "queued"}, 202
+        )
+        with patch.object(cli.api, "request_json", return_value=response):
+            code, stdout, stderr = run_cli([
+                "generate", "--async", "--prompt", "cat", "--model", secret,
+                "--idempotency-key", "request-key",
+            ], {config.API_KEY_ENV: "test-key"})
+
+        self.assertEqual(code, 0, stderr)
+        self.assertNotIn(secret, stdout)
+        self.assertEqual(json.loads(stdout)["model"], "[REDACTED]")
 
     def test_async_create_rejects_malformed_summary_fields(self):
         malformed = [

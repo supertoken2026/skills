@@ -422,10 +422,10 @@ def require_success(response, key_kind, model, *secrets):
     return api.parse_json_response(response, secrets)
 
 
-def output_rows(saved):
+def output_rows(saved, *secrets):
     return [
         {
-            "path": str(item.path),
+            "path": api.sanitize_server_text(str(item.path), *secrets),
             "bytes": item.bytes_written,
             "format": item.format,
         }
@@ -522,9 +522,11 @@ def run_sync_generate(args, base_url, api_key, legacy_output=False):
             content_type = api.sanitize_server_text(content_type, api_key)
         print(json.dumps({
             "status": response.status,
-            "base_url": base_url,
-            "model": payload["model"],
-            "output": str(Path(args.output).expanduser()),
+            "base_url": api.sanitize_url(base_url, api_key),
+            "model": api.sanitize_server_text(payload["model"], api_key),
+            "output": api.sanitize_server_text(
+                str(Path(args.output).expanduser()), api_key
+            ),
             "bytes": saved[0].bytes_written,
             "content_type": content_type,
         }, ensure_ascii=False, indent=2))
@@ -535,8 +537,8 @@ def run_sync_generate(args, base_url, api_key, legacy_output=False):
     print(json.dumps({
         "mode": "sync",
         "operation": "generation",
-        "model": payload["model"],
-        "outputs": output_rows(saved),
+        "model": api.sanitize_server_text(payload["model"], api_key),
+        "outputs": output_rows(saved, api_key),
     }, ensure_ascii=False, indent=2))
 
 
@@ -578,8 +580,8 @@ def run_sync_edit(args, base_url, api_key, inputs):
     print(json.dumps({
         "mode": "sync",
         "operation": "edit",
-        "model": payload["model"],
-        "outputs": output_rows(saved),
+        "model": api.sanitize_server_text(payload["model"], api_key),
+        "outputs": output_rows(saved, api_key),
     }, ensure_ascii=False, indent=2))
 
 
@@ -900,7 +902,7 @@ def create_async_task(args, base_url, api_key, inputs=None, output_secrets=()):
 def _async_result(
     task_id, task, output, timeout, operation=None, model=None,
     expected_count=None, deadline=None, wait_timeout=None,
-    monotonic=None,
+    monotonic=None, secrets=(),
 ):
     result = task.get("result")
     if not isinstance(result, dict):
@@ -927,13 +929,14 @@ def _async_result(
     value = {
         "task_id": task_id,
         "status": task.get("status"),
-        "outputs": output_rows(saved),
+        "outputs": output_rows(saved, *secrets),
     }
     if "progress" in task:
         value["progress"] = task["progress"]
     if operation is not None and model is not None:
         value.update({
-            "mode": "async", "operation": operation, "model": model,
+            "mode": "async", "operation": operation,
+            "model": api.sanitize_server_text(model, *secrets),
         })
     return value
 
@@ -949,7 +952,9 @@ def run_async_create(args, base_url, api_key, inputs=None, wait_runtime=None):
         value = {
             "mode": "async",
             "operation": operation,
-            "model": model,
+            "model": api.sanitize_server_text(
+                model, api_key, *output_secrets
+            ),
             "task_id": task.get("id"),
             "status": task.get("status"),
             "idempotency_key": api.sanitize_server_text(
@@ -983,6 +988,7 @@ def run_async_create(args, base_url, api_key, inputs=None, wait_runtime=None):
         deadline=deadline,
         wait_timeout=args.wait_timeout,
         monotonic=time.monotonic,
+        secrets=(api_key, resource_key),
     )
     result["idempotency_key"] = api.sanitize_server_text(
         idempotency_key, api_key, resource_key
@@ -1023,6 +1029,7 @@ def run_wait_command(args, base_url, resource_key):
             deadline=deadline,
             wait_timeout=args.wait_timeout,
             monotonic=time.monotonic,
+            secrets=(resource_key,),
         ),
         ensure_ascii=False,
         indent=2,
@@ -1032,7 +1039,10 @@ def run_wait_command(args, base_url, resource_key):
 def main(argv=None, legacy_output=False):
     configure_console_encoding()
     args = parse_args(argv)
-    active_secrets = []
+    active_secrets = [
+        value for name in ("api_key", "resource_api_key")
+        if isinstance(value := getattr(args, name, None), str) and value
+    ]
     try:
         validate_mode_args(args)
         if args.command == "models":
@@ -1085,7 +1095,10 @@ def main(argv=None, legacy_output=False):
             active_secrets.append(resource_key)
             run_wait_command(args, base_url, resource_key)
     except (ConfigError, api.ApiUsageError, ValueError, json.JSONDecodeError) as exc:
-        print(str(exc), file=sys.stderr)
+        print(
+            api.sanitize_server_text(str(exc), *active_secrets),
+            file=sys.stderr,
+        )
         return 2
     except (urllib.error.URLError, api.ApiResponseError, binascii.Error, OSError) as exc:
         print(
