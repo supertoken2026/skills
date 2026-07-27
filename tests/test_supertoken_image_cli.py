@@ -1171,7 +1171,7 @@ class AsyncTaskTests(unittest.TestCase):
         timeouts = []
         sleeps = []
 
-        def query(_base, _key, _task_id, timeout):
+        def query(_base, _key, _task_id, timeout, **_deadline_options):
             timeouts.append(timeout)
             return {"id": "task_deadline", "status": "queued"}, {}
 
@@ -1185,6 +1185,55 @@ class AsyncTaskTests(unittest.TestCase):
 
         self.assertEqual(timeouts, [10.0, 1.0])
         self.assertEqual(sleeps, [3.0])
+
+    def test_task_body_slow_drip_honors_polling_absolute_deadline(self):
+        class Clock:
+            now = 0.0
+
+            def __call__(self):
+                return self.now
+
+        class SlowDripResponse:
+            status = 200
+            headers = {"Content-Type": "application/json"}
+
+            def __init__(self, body, clock):
+                self._stream = io.BytesIO(body)
+                self.clock = clock
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def read(self, size=-1):
+                return self._stream.read(size)
+
+            def read1(self, size=-1):
+                self.clock.now += 0.6
+                return self._stream.read(min(size, 1))
+
+        clock = Clock()
+        body = json.dumps({
+            "id": "task_slow_body", "status": "succeeded"
+        }).encode("utf-8")
+        response = SlowDripResponse(body, clock)
+        with patch.object(cli.api, "_open_url", return_value=response):
+            with self.assertRaises(api.ApiResponseError) as raised:
+                cli.poll_task(
+                    "https://api.example.test",
+                    "resource-key",
+                    "task_slow_body",
+                    timeout=30,
+                    wait_timeout=1,
+                    monotonic=clock,
+                    deadline=1.0,
+                )
+
+        self.assertEqual(
+            str(raised.exception), "等待任务 task_slow_body 超过 1 秒。"
+        )
 
     def test_wait_deadline_also_limits_result_downloads_and_rolls_back(self):
         task = {
@@ -1200,7 +1249,7 @@ class AsyncTaskTests(unittest.TestCase):
         time_values = iter([0.0, 8.0, 9.0, 9.5, 10.1])
         download_timeouts = []
 
-        def download(_url, timeout):
+        def download(_url, timeout, **_deadline_options):
             download_timeouts.append(timeout)
             return PNG_BYTES
 

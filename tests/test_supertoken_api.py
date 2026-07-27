@@ -1,14 +1,16 @@
 import base64
 import email.message
+import http.client
 import io
 import json
+import socket
 import sys
 import tempfile
 import urllib.error
 import urllib.response
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 
 SCRIPTS_DIR = (
@@ -44,6 +46,10 @@ class FakeResponse:
 
     def geturl(self):
         return "https://api.example.test/response"
+
+
+def public_dns_result(_host, port, **_kwargs):
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", port))]
 
 
 class EndpointTests(unittest.TestCase):
@@ -166,6 +172,19 @@ class DiagnosticTests(unittest.TestCase):
             value, "https://example.test/v1/image/tasks/[REDACTED]"
         )
         self.assertNotIn(secret, value)
+
+    def test_sanitized_diagnostics_contain_no_raw_terminal_controls(self):
+        controls = "\x00\x07\x09\x0b\x0c\x0d\x1b\x7f\x80\x85\x9f"
+        body = f"before\n{controls}after".encode("utf-8")
+
+        diagnostic = api.sanitize_diagnostic(body)
+        server_text = api.sanitize_server_text(f"before\n{controls}after")
+
+        self.assertIn("before\nafter", diagnostic)
+        self.assertIn("before\nafter", server_text)
+        for value in (diagnostic, server_text):
+            for character in controls:
+                self.assertNotIn(character, value)
 
 
 class HttpErrorTests(unittest.TestCase):
@@ -674,17 +693,230 @@ class ImageValidationAndOutputTests(unittest.TestCase):
                 sorted(path.name for path in Path(temp_dir).iterdir()), ["result.png"]
             )
 
-    def test_download_rejects_a_redirect_to_http(self):
-        response = MagicMock()
-        response.geturl.return_value = "http://cdn.example/image.png"
-        response.__enter__.return_value = response
-        with patch.object(api.urllib.request, "urlopen", return_value=response):
-            with self.assertRaisesRegex(api.ApiResponseError, "HTTPS"):
-                api.download_image("https://cdn.example/start", 5)
+    def test_result_url_validation_rejects_malformed_and_dangerous_urls_before_transport(self):
+        signed_secret = "signed-secret-value"
+        cases = (
+            "",
+            "image.png",
+            "http://cdn.example.test/image.png",
+            f"https://user:pass@cdn.example.test/image.png?signature={signed_secret}",
+            f"https://cdn.example.test/image.png?signature={signed_secret}#fragment",
+            f"https://cdn.example.test/im age.png?signature={signed_secret}",
+            f"https://cdn.example.test/image.png?signature={signed_secret}\x1b",
+            f"https://cdn.example.test:0/image.png?signature={signed_secret}",
+            f"https://cdn.example.test:99999/image.png?signature={signed_secret}",
+        )
+        response = FakeResponse(200, {}, PNG_BYTES)
+        with patch.object(
+            api.urllib.request, "urlopen", return_value=response
+        ) as legacy_open:
+            with patch.object(
+                api, "_open_result_url", return_value=response, create=True
+            ) as result_open:
+                for url in cases:
+                    with self.subTest(url=url):
+                        with self.assertRaises(api.ApiResponseError) as raised:
+                            api.download_image(url, 5)
+                        self.assertEqual(str(raised.exception), "图片下载地址无效。")
+                        self.assertNotIn(signed_secret, str(raised.exception))
+        legacy_open.assert_not_called()
+        result_open.assert_not_called()
+
+    def test_result_url_validation_rejects_literal_and_resolved_non_global_hosts(self):
+        literal_urls = (
+            "https://127.0.0.1/image.png",
+            "https://10.0.0.1/image.png",
+            "https://169.254.1.1/image.png",
+            "https://[::1]/image.png",
+            "https://224.0.0.1/image.png",
+            "https://0.0.0.0/image.png",
+            "https://192.0.2.1/image.png",
+        )
+        response = FakeResponse(200, {}, PNG_BYTES)
+        with patch.object(
+            api.urllib.request, "urlopen", return_value=response
+        ) as legacy_open:
+            with patch.object(
+                api, "_open_result_url", return_value=response, create=True
+            ) as result_open:
+                for url in literal_urls:
+                    with self.subTest(url=url):
+                        with self.assertRaisesRegex(api.ApiResponseError, "不安全"):
+                            api.download_image(url, 5)
+                with patch.object(
+                    socket,
+                    "getaddrinfo",
+                    return_value=[
+                        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.1.2.3", 443))
+                    ],
+                ):
+                    with self.assertRaisesRegex(api.ApiResponseError, "不安全"):
+                        api.download_image("https://cdn.example.test/image.png", 5)
+        legacy_open.assert_not_called()
+        result_open.assert_not_called()
+
+    def test_result_dns_failure_is_fixed_and_does_not_echo_signed_url(self):
+        signed_secret = "dns-signed-secret"
+        url = f"https://missing.example.test/image.png?signature={signed_secret}"
+        with patch.object(
+            socket, "getaddrinfo", side_effect=socket.gaierror(f"failure {url}")
+        ):
+            response = FakeResponse(200, {}, PNG_BYTES)
+            with patch.object(
+                api.urllib.request, "urlopen", return_value=response
+            ) as legacy_open:
+                with patch.object(
+                    api, "_open_result_url", return_value=response, create=True
+                ) as result_open:
+                    with self.assertRaises(api.ApiResponseError) as raised:
+                        api.download_image(url, 5)
+
+        self.assertEqual(str(raised.exception), "图片下载地址解析失败。")
+        self.assertNotIn(signed_secret, str(raised.exception))
+        legacy_open.assert_not_called()
+        result_open.assert_not_called()
+
+    def test_download_does_not_follow_redirect_or_read_redirect_body(self):
+        counts = {"source": 0, "target": 0}
+
+        class TrackingBody(io.BytesIO):
+            read_calls = 0
+
+            def read(self, size=-1):
+                self.read_calls += 1
+                return super().read(size)
+
+        redirect_body = TrackingBody(b"signed redirect body")
+
+        class SimulatedTransport(urllib.request.BaseHandler):
+            handler_order = 100
+
+            def https_open(self, request):
+                if urllib.parse.urlsplit(request.full_url).hostname == "target.example.test":
+                    counts["target"] += 1
+                    return urllib.response.addinfourl(
+                        io.BytesIO(PNG_BYTES), {}, request.full_url, 200
+                    )
+                counts["source"] += 1
+                headers = email.message.Message()
+                headers["Location"] = "https://target.example.test/image.png"
+                response = urllib.response.addinfourl(
+                    redirect_body, headers, request.full_url, 302
+                )
+                response.msg = "Found"
+                return response
+
+        legacy_opener = urllib.request.build_opener(SimulatedTransport())
+        safe_opener = urllib.request.build_opener(
+            api._NoRedirectHandler(), SimulatedTransport()
+        )
+        with patch.object(socket, "getaddrinfo", side_effect=public_dns_result):
+            with patch.object(api.urllib.request, "_opener", legacy_opener):
+                with patch.object(api, "_RESULT_OPENER", safe_opener, create=True):
+                    try:
+                        api.download_image("https://source.example.test/start", 5)
+                    except Exception as exc:
+                        try:
+                            self.assertIsInstance(exc, api.ApiResponseError)
+                            self.assertIn("重定向", str(exc))
+                        finally:
+                            if isinstance(exc, urllib.error.HTTPError):
+                                exc.close()
+                    else:
+                        self.fail("download_image followed a redirect")
+
+        self.assertEqual(counts, {"source": 1, "target": 0})
+        self.assertEqual(redirect_body.read_calls, 0)
+
+    def test_download_does_not_read_an_error_response_body(self):
+        class ErrorResponse(FakeResponse):
+            read_calls = 0
+
+            def read(self, size=-1):
+                self.read_calls += 1
+                return super().read(size)
+
+        response = ErrorResponse(500, {}, b"signed error body")
+        with patch.object(socket, "getaddrinfo", side_effect=public_dns_result):
+            with patch.object(api, "_open_result_url", return_value=response):
+                with self.assertRaisesRegex(api.ApiResponseError, "请求失败"):
+                    api.download_image("https://cdn.example.test/image.png", 5)
+
+        self.assertEqual(response.read_calls, 0)
+
+    def test_download_transport_and_http_parser_errors_are_fixed_and_redacted(self):
+        signed_secret = "transport-signed-secret"
+        url = f"https://cdn.example.test/image.png?signature={signed_secret}"
+        failures = (
+            http.client.InvalidURL(f"invalid {url}"),
+            urllib.error.URLError(f"offline {url}"),
+            UnicodeEncodeError("ascii", "é", 0, 1, f"invalid {url}"),
+        )
+        with patch.object(socket, "getaddrinfo", side_effect=public_dns_result):
+            for failure in failures:
+                with self.subTest(failure=type(failure).__name__):
+                    with patch.object(
+                        api.urllib.request, "urlopen", side_effect=failure
+                    ):
+                        with patch.object(
+                            api, "_open_result_url", side_effect=failure, create=True
+                        ):
+                            try:
+                                api.download_image(url, 5)
+                            except Exception as exc:
+                                self.assertIsInstance(exc, api.ApiResponseError)
+                                self.assertEqual(str(exc), "图片下载请求失败。")
+                                self.assertNotIn(signed_secret, str(exc))
+                            else:
+                                self.fail("download_image accepted a transport failure")
 
     def test_download_image_body_is_bounded(self):
         response = FakeResponse(200, {"Content-Length": "5"}, b"12345")
         with patch.object(api, "MAX_DOWNLOAD_BYTES", 4):
-            with patch.object(api.urllib.request, "urlopen", return_value=response):
-                with self.assertRaisesRegex(api.ApiResponseError, "超过"):
-                    api.download_image("https://cdn.example/image.png", 5)
+            with patch.object(socket, "getaddrinfo", side_effect=public_dns_result):
+                with patch.object(api.urllib.request, "urlopen", return_value=response):
+                    with patch.object(
+                        api, "_open_result_url", return_value=response, create=True
+                    ):
+                        with self.assertRaisesRegex(api.ApiResponseError, "超过"):
+                            api.download_image("https://cdn.example/image.png", 5)
+
+    def test_result_body_slow_drip_honors_absolute_deadline_and_rolls_back(self):
+        class Clock:
+            now = 0.0
+
+            def __call__(self):
+                return self.now
+
+        class SlowDripResponse(FakeResponse):
+            def __init__(self, clock):
+                super().__init__(200, {}, PNG_BYTES)
+                self.clock = clock
+
+            def read1(self, size=-1):
+                self.clock.now += 0.6
+                return self._stream.read(min(size, 1))
+
+        clock = Clock()
+        response = SlowDripResponse(clock)
+        deadline_message = "等待任务 task_slow_image 超过 1 秒。"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "result.png"
+            with patch.object(socket, "getaddrinfo", side_effect=public_dns_result):
+                with patch.object(api.urllib.request, "urlopen", return_value=response):
+                    with patch.object(
+                        api, "_open_result_url", return_value=response, create=True
+                    ):
+                        with self.assertRaisesRegex(
+                            api.ApiResponseError, "task_slow_image"
+                        ):
+                            api.save_image_items(
+                                [{"url": "https://cdn.example.test/image.png"}],
+                                output,
+                                timeout=30,
+                                deadline=1.0,
+                                deadline_message=deadline_message,
+                                monotonic=clock,
+                            )
+
+            self.assertFalse(output.exists())
