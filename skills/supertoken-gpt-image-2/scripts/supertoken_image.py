@@ -39,7 +39,10 @@ def configure_console_encoding():
         if reconfigure is None:
             continue
         try:
-            reconfigure(encoding="utf-8", errors="backslashreplace")
+            options = {"errors": "backslashreplace"}
+            if getattr(stream, "isatty", lambda: False)():
+                options["encoding"] = "utf-8"
+            reconfigure(**options)
         except (OSError, ValueError):
             pass
 
