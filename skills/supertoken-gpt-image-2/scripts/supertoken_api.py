@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 import base64
 import binascii
+import http.client
+import ipaddress
 import json
 import os
 import re
+import socket
 import tempfile
 import time
 import urllib.error
@@ -92,19 +95,117 @@ def validate_local_images(paths):
     return validated
 
 
-def download_image(url, timeout):
-    if urllib.parse.urlparse(url).scheme != "https":
-        raise ApiResponseError("图片下载地址必须使用 HTTPS。")
-    request = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        if urllib.parse.urlparse(response.geturl()).scheme != "https":
-            raise ApiResponseError("图片下载重定向后的地址必须使用 HTTPS。")
-        return bounded_read(
-            response, MAX_DOWNLOAD_BYTES, "图片下载响应", response.headers
-        )
+def _validate_result_url(url):
+    if not isinstance(url, str) or not url or any(
+        character.isspace()
+        or ord(character) < 32
+        or 0x7F <= ord(character) <= 0x9F
+        for character in url
+    ):
+        raise ApiResponseError("图片下载地址无效。")
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        host = parsed.hostname
+        port = parsed.port
+    except (TypeError, UnicodeError, ValueError) as exc:
+        raise ApiResponseError("图片下载地址无效。") from exc
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.netloc
+        or not host
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or port == 0
+    ):
+        raise ApiResponseError("图片下载地址无效。")
+    port = port or 443
+
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            resolved = socket.getaddrinfo(
+                host, port, type=socket.SOCK_STREAM
+            )
+        except (OSError, UnicodeError) as exc:
+            raise ApiResponseError("图片下载地址解析失败。") from exc
+        addresses = []
+        for _family, _type, _protocol, _canonical_name, socket_address in resolved:
+            try:
+                addresses.append(ipaddress.ip_address(socket_address[0]))
+            except (IndexError, TypeError, ValueError) as exc:
+                raise ApiResponseError("图片下载地址解析失败。") from exc
+        if not addresses:
+            raise ApiResponseError("图片下载地址解析失败。")
+    else:
+        addresses = [literal]
+
+    if any(
+        not address.is_global
+        or address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_unspecified
+        or address.is_reserved
+        for address in addresses
+    ):
+        raise ApiResponseError("图片下载地址指向不安全的网络地址。")
 
 
-def _item_bytes(item, timeout):
+def download_image(
+    url,
+    timeout,
+    *,
+    deadline=None,
+    deadline_message=None,
+    monotonic=None,
+):
+    _validate_result_url(url)
+    try:
+        request = urllib.request.Request(url, method="GET")
+        with _open_result_url(request, timeout) as response:
+            status = getattr(response, "status", None)
+            if isinstance(status, int) and 300 <= status < 400:
+                raise ApiResponseError("图片下载不允许重定向。")
+            if isinstance(status, int) and not 200 <= status < 300:
+                raise ApiResponseError("图片下载请求失败。")
+            return bounded_read(
+                response,
+                MAX_DOWNLOAD_BYTES,
+                "图片下载响应",
+                response.headers,
+                deadline=deadline,
+                deadline_message=deadline_message,
+                monotonic=monotonic,
+            )
+    except urllib.error.HTTPError as exc:
+        try:
+            if 300 <= exc.code < 400:
+                raise ApiResponseError("图片下载不允许重定向。") from exc
+            raise ApiResponseError("图片下载请求失败。") from exc
+        finally:
+            exc.close()
+    except ApiResponseError:
+        raise
+    except (
+        ValueError,
+        OSError,
+        urllib.error.URLError,
+        http.client.HTTPException,
+    ) as exc:
+        raise ApiResponseError("图片下载请求失败。") from exc
+
+
+def _item_bytes(
+    item,
+    timeout,
+    *,
+    deadline=None,
+    deadline_message=None,
+    monotonic=None,
+):
     encoded = item.get("b64_json")
     if encoded is not None:
         if not isinstance(encoded, (str, bytes, bytearray)) or not encoded:
@@ -120,7 +221,15 @@ def _item_bytes(item, timeout):
     if url is not None:
         if not isinstance(url, str) or not url:
             raise ApiResponseError("图片响应中的 URL 无效。")
-        return download_image(url, timeout), url
+        if deadline is None:
+            return download_image(url, timeout), url
+        return download_image(
+            url,
+            timeout,
+            deadline=deadline,
+            deadline_message=deadline_message,
+            monotonic=monotonic,
+        ), url
     raise ApiResponseError("图片响应中没有 url 或 b64_json。")
 
 
@@ -221,7 +330,13 @@ def save_image_items(
                 if remaining <= 0:
                     raise ApiResponseError(deadline_message)
                 item_timeout = min(timeout, remaining)
-            data, source_url = _item_bytes(item, item_timeout)
+            data, source_url = _item_bytes(
+                item,
+                item_timeout,
+                deadline=deadline,
+                deadline_message=deadline_message,
+                monotonic=monotonic,
+            )
             if deadline is not None and deadline - monotonic() <= 0:
                 raise ApiResponseError(deadline_message)
             total += len(data)
@@ -325,10 +440,15 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 _AUTHENTICATED_OPENER = urllib.request.build_opener(_NoRedirectHandler())
+_RESULT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
 
 
 def _open_url(request, timeout):
     return _AUTHENTICATED_OPENER.open(request, timeout=timeout)
+
+
+def _open_result_url(request, timeout):
+    return _RESULT_OPENER.open(request, timeout=timeout)
 
 
 def _content_length(headers):
@@ -340,18 +460,42 @@ def _content_length(headers):
     return parsed if parsed >= 0 else None
 
 
-def bounded_read(stream, limit, label, headers=None):
+def _check_deadline(deadline, deadline_message, monotonic):
+    if deadline is not None and monotonic() >= deadline:
+        error = ApiResponseError(
+            deadline_message or "响应读取超过等待时限。"
+        )
+        error.deadline_exceeded = True
+        raise error
+
+
+def bounded_read(
+    stream,
+    limit,
+    label,
+    headers=None,
+    *,
+    deadline=None,
+    deadline_message=None,
+    monotonic=None,
+):
     length = _content_length(headers)
     if length is not None and length > limit:
         raise ApiResponseError(f"{label}超过大小限制。")
+    monotonic = monotonic or time.monotonic
+    read = getattr(stream, "read1", None) if deadline is not None else None
+    if not callable(read):
+        read = stream.read
     chunks = []
     total = 0
     while True:
         requested = min(64 * 1024, limit - total + 1)
+        _check_deadline(deadline, deadline_message, monotonic)
         try:
-            chunk = stream.read(requested)
+            chunk = read(requested)
         except TypeError as exc:
             raise ApiResponseError(f"{label}无法按限制读取。") from exc
+        _check_deadline(deadline, deadline_message, monotonic)
         if not isinstance(chunk, (bytes, bytearray)):
             raise ApiResponseError(f"{label}读取结果无效。")
         if len(chunk) > requested or total + len(chunk) > limit:
@@ -362,7 +506,14 @@ def bounded_read(stream, limit, label, headers=None):
         total += len(chunk)
 
 
-def _open(request, timeout):
+def _open(
+    request,
+    timeout,
+    *,
+    deadline=None,
+    deadline_message=None,
+    monotonic=None,
+):
     try:
         with _open_url(request, timeout) as response:
             headers = dict(response.headers)
@@ -370,12 +521,28 @@ def _open(request, timeout):
                 MAX_API_BODY_BYTES
                 if 200 <= response.status < 300 else MAX_ERROR_BODY_BYTES
             )
-            body = bounded_read(response, limit, "SuperToken 响应", headers)
+            body = bounded_read(
+                response,
+                limit,
+                "SuperToken 响应",
+                headers,
+                deadline=deadline,
+                deadline_message=deadline_message,
+                monotonic=monotonic,
+            )
             return ApiResponse(response.status, headers, body)
     except urllib.error.HTTPError as exc:
         try:
             headers = dict(exc.headers or {})
-            body = bounded_read(exc, MAX_ERROR_BODY_BYTES, "SuperToken 错误响应", headers)
+            body = bounded_read(
+                exc,
+                MAX_ERROR_BODY_BYTES,
+                "SuperToken 错误响应",
+                headers,
+                deadline=deadline,
+                deadline_message=deadline_message,
+                monotonic=monotonic,
+            )
             return ApiResponse(exc.code, headers, body)
         finally:
             exc.close()
@@ -400,7 +567,18 @@ def _validate_authenticated_url(url):
         raise ApiUsageError("认证 API 请求必须使用有效的绝对 HTTPS 地址。")
 
 
-def request_json(method, url, api_key, timeout, payload=None, headers=None):
+def request_json(
+    method,
+    url,
+    api_key,
+    timeout,
+    payload=None,
+    headers=None,
+    *,
+    deadline=None,
+    deadline_message=None,
+    monotonic=None,
+):
     _validate_authenticated_url(url)
     body = None if payload is None else json.dumps(
         payload, ensure_ascii=False
@@ -417,7 +595,13 @@ def request_json(method, url, api_key, timeout, payload=None, headers=None):
             request.add_unredirected_header(name, value)
         else:
             request.add_header(name, value)
-    return _open(request, timeout)
+    return _open(
+        request,
+        timeout,
+        deadline=deadline,
+        deadline_message=deadline_message,
+        monotonic=monotonic,
+    )
 
 
 def request_multipart(method, url, api_key, timeout, fields, files, headers=None):
@@ -476,7 +660,13 @@ def _sanitize_text(text, secrets):
     text = URL_PATTERN.sub(
         lambda match: sanitize_url(match.group(0), *secrets), text
     )
-    return IMAGE_BASE64_PATTERN.sub("[REDACTED IMAGE DATA]", text)
+    text = IMAGE_BASE64_PATTERN.sub("[REDACTED IMAGE DATA]", text)
+    return "".join(
+        character
+        for character in text
+        if character == "\n"
+        or not (ord(character) < 32 or 0x7F <= ord(character) <= 0x9F)
+    )
 
 
 def sanitize_server_text(value, *secrets):

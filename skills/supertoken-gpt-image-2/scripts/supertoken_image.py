@@ -671,14 +671,31 @@ def terminal_task_error(task_id, exc, resource_key):
     return error
 
 
-def query_task(base_url, resource_key, task_id, timeout):
+def query_task(
+    base_url,
+    resource_key,
+    task_id,
+    timeout,
+    *,
+    deadline=None,
+    deadline_message=None,
+    monotonic=None,
+):
     if not valid_task_id(task_id, (resource_key,)):
         raise api.ApiUsageError("任务 ID 格式无效。")
+    deadline_options = {}
+    if deadline is not None:
+        deadline_options = {
+            "deadline": deadline,
+            "deadline_message": deadline_message,
+            "monotonic": monotonic,
+        }
     response = api.request_json(
         "GET",
         api.endpoint_url(base_url, f"/v1/image/tasks/{task_id}"),
         resource_key,
         timeout,
+        **deadline_options,
     )
     if not 200 <= response.status < 300:
         message = api.classify_http_error(
@@ -715,6 +732,7 @@ def poll_task(
         raise api.ApiUsageError("--wait-timeout 必须大于 0。")
     if deadline is None:
         deadline = monotonic() + wait_timeout
+    deadline_message = f"等待任务 {task_id} 超过 {wait_timeout} 秒。"
     interval = retry_delay(initial_retry_after)
     consecutive_failures = 0
     while True:
@@ -723,7 +741,13 @@ def poll_task(
             break
         try:
             task, headers = query_task(
-                base_url, resource_key, task_id, min(timeout, remaining)
+                base_url,
+                resource_key,
+                task_id,
+                min(timeout, remaining),
+                deadline=deadline,
+                deadline_message=deadline_message,
+                monotonic=monotonic,
             )
             consecutive_failures = 0
         except urllib.error.URLError as exc:
@@ -736,6 +760,8 @@ def poll_task(
             sleep(min(interval, remaining))
             continue
         except api.ApiResponseError as exc:
+            if getattr(exc, "deadline_exceeded", False):
+                raise
             if getattr(exc, "status", None) not in {429, 502, 503}:
                 raise terminal_task_error(task_id, exc, resource_key) from exc
             consecutive_failures += 1
@@ -768,7 +794,7 @@ def poll_task(
         if remaining <= 0:
             break
         sleep(min(interval, remaining))
-    raise api.ApiResponseError(f"等待任务 {task_id} 超过 {wait_timeout} 秒。")
+    raise api.ApiResponseError(deadline_message)
 
 
 def _multipart_async_edit(args, inputs):
