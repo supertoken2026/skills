@@ -676,6 +676,40 @@ class LegacyGeneratorCompatibilityTests(unittest.TestCase):
         self.assertEqual(value["content_type"], "image/png; note=[REDACTED]")
         self.assertNotIn("sk-serversecret123", stdout.getvalue())
 
+    def test_legacy_stdout_redacts_credential_shaped_base_url(self):
+        image_bytes = b"\x89PNG\r\n\x1a\nlegacy"
+        response = api.ApiResponse(
+            201,
+            {"Content-Type": "image/png"},
+            json.dumps({
+                "data": [{
+                    "b64_json": base64.b64encode(image_bytes).decode("ascii")
+                }]
+            }).encode("utf-8"),
+        )
+        secret = "sk-baseurlsecret123"
+        stdout = io.StringIO()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "legacy.png"
+            environment = {
+                config.API_KEY_ENV: "test-key",
+                config.CONFIG_DIR_ENV: str(Path(temp_dir) / "config"),
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                with patch.object(cli.api, "request_json", return_value=response):
+                    with contextlib.redirect_stdout(stdout):
+                        code = generator.main([
+                            "--prompt", "cat", "--output", str(output),
+                            "--base-url", f"https://proxy.example/{secret}",
+                        ])
+
+        self.assertEqual(code, 0)
+        self.assertNotIn(secret, stdout.getvalue())
+        self.assertEqual(
+            json.loads(stdout.getvalue())["base_url"],
+            "https://proxy.example/[REDACTED]",
+        )
+
     def test_legacy_sync_rejects_more_results_than_requested(self):
         image_bytes = b"\x89PNG\r\n\x1a\nlegacy"
         item = {"b64_json": base64.b64encode(image_bytes).decode("ascii")}

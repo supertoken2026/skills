@@ -183,7 +183,7 @@ Base64 输入使用对象数组：
 - 本地文件内容必须是 PNG、JPEG 或 WebP；不只检查扩展名。
 - Mask 最多一张。本地 Mask 应与原图尺寸一致，尺寸由服务端最终校验。
 
-输入 URL 可使用 HTTP 或 HTTPS。生成结果下载只接受 HTTPS，重定向后的最终地址也必须是 HTTPS。
+输入 URL 可使用 HTTP 或 HTTPS。生成结果下载只接受 HTTPS，并拒绝所有 3xx 重定向，不会跟随到其他地址。
 
 ## 任务、重试与结果
 
@@ -198,7 +198,7 @@ Base64 输入使用对象数组：
 
 同步生成、同步编辑和异步创建的 POST 都不自动重试。提交连接中断或响应失败时，CLI 会显示脱敏后的本次 `Idempotency-Key`；普通恢复键保留原值，当前凭据或具有凭据外观的值会被隐藏。确认或手动重试同一个异步请求时必须复用原值；不同请求使用新值。
 
-任务查询 GET 遇到连接错误、`429`、`502` 或 `503` 时，最多允许连续失败三次。一次成功查询会重置计数。轮询优先采用 `Retry-After`；缺失时使用当前间隔，初始为 2 秒，每次限制在 2 到 30 秒。
+任务查询 GET 遇到连接错误、`429`、`502` 或 `503` 时，最多重试三次；第四次连续失败即终止。一次成功查询会重置计数。轮询优先采用 `Retry-After`；缺失时使用当前间隔，初始为 2 秒，每次限制在 2 到 30 秒。
 
 同步结果从 `data[]` 保存，异步结果从 `result.images[]` 保存。同步响应必须返回与请求 `n` 相同的数量；恢复任务接受 1 到 10 张。单张远程图片最多 64 MiB，一次保存的解码结果合计最多 256 MiB。API 成功响应上限为 384 MiB，错误响应上限为 1 MiB。图片先写入目标目录中的唯一临时文件，全部校验通过后再替换目标项；后续项目失败时会清理本次输出。单图保留请求文件名的主干，多图依次命名为 `name-1.ext`、`name-2.ext`。扩展名统一为识别出的 `.png`、`.jpeg` 或 `.webp`，成功 `outputs[].path` 使用不解引用最终组件的绝对路径。
 
@@ -388,7 +388,7 @@ The client checks these limits before dispatch:
 - Local content must be PNG, JPEG, or WebP; the suffix alone is not trusted.
 - At most one Mask. A local Mask should match the source dimensions; the service performs the final dimension check.
 
-Input URLs may use HTTP or HTTPS. Result downloads require HTTPS, including the final URL after redirects.
+Input URLs may use HTTP or HTTPS. Result downloads require HTTPS and reject every 3xx redirect without following it.
 
 ### Tasks, retries, and results
 
@@ -403,7 +403,7 @@ Input URLs may use HTTP or HTTPS. Result downloads require HTTPS, including the 
 
 Sync generation, sync editing, and async creation POST requests are never retried automatically. If submission loses the connection or returns an error, the CLI prints that attempt's redacted `Idempotency-Key`; ordinary recovery keys remain intact, while active or credential-shaped values are hidden. Reuse the original value to confirm or manually retry the same async request. Use a new key for a different request.
 
-Task-query GET requests tolerate at most three consecutive connection errors, `429`, `502`, or `503` responses. A successful query resets the count. Polling prefers `Retry-After`; otherwise it keeps the current interval, starting at 2 seconds and clamping every interval to 2 through 30 seconds.
+Task-query GET requests retry connection errors, `429`, `502`, or `503` responses at most three times; the fourth consecutive failure terminates polling. A successful query resets the count. Polling prefers `Retry-After`; otherwise it keeps the current interval, starting at 2 seconds and clamping every interval to 2 through 30 seconds.
 
 Sync results come from `data[]`; async results come from `result.images[]`. A synchronous response must contain exactly the requested `n`; resumed tasks accept 1-10 images. One remote image is limited to 64 MiB and aggregate decoded output to 256 MiB. Successful API bodies are limited to 384 MiB and error bodies to 1 MiB. Unique temporary files are written in the destination directory and promoted only after every item passes validation; a later failure removes outputs from that save. One result keeps the requested stem; multiple results become `name-1.ext`, `name-2.ext`, and so on. The suffix is canonicalized to detected `.png`, `.jpeg`, or `.webp`. Successful `outputs[].path` values are lexical absolute paths that do not dereference the final component.
 
