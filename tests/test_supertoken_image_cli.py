@@ -1268,8 +1268,10 @@ class AsyncTaskTests(unittest.TestCase):
 
             self.assertEqual(code, 1)
             self.assertEqual(stdout, "")
-            self.assertIn("task_download_deadline", stderr)
-            self.assertIn("10", stderr)
+            self.assertEqual(
+                stderr.strip(),
+                "等待任务 task_download_deadline 超过 10 秒。",
+            )
             self.assertEqual(download_timeouts, [2.0, 0.5])
             self.assertFalse(output.exists())
             self.assertFalse(output.with_name("result-1.png").exists())
