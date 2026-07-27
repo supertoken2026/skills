@@ -589,7 +589,7 @@ def encode_multipart(fields, files, boundary=None):
                 raise ApiUsageError("参考图片最多 10 张。")
         if not isinstance(item.data, bytes):
             raise ApiUsageError("multipart 图片内容必须是不可变字节。")
-        data = item.data
+        data = bytes(item.data)
         if len(data) > MAX_FILE_BYTES:
             raise ApiUsageError(f"单个图片文件不能超过 20 MiB：{item.path}。")
         detect_image_format(data)
