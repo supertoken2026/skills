@@ -38,7 +38,7 @@
 | `SUPERTOKEN_API_KEY` | 模型 API Token（`sk-...`） | 模型列表、同步生成、同步编辑、异步创建 |
 | `SUPERTOKEN_RESOURCE_API_KEY` | 资源 API Key（`ak_...`） | 异步任务查询与等待 |
 
-两种 Key 分开读取和存储。从环境变量或安全存储读取时，CLI 会在请求前拒绝已知的 Key 类型混用。显式传入的 `--api-key` 和 `--resource-api-key` 不做前缀校验，调用者必须按上表选择。`wk-...` Webhook Key 不会被读取或保存；本版也不提供 Webhook 接收服务。
+两种 Key 分开读取和存储。CLI 会在请求前拒绝环境变量、安全存储或显式 `--api-key` 和 `--resource-api-key` 中已知的 Key 类型混用；未知前缀仍可用于兼容的自定义服务。`wk-...` Webhook Key 不会被读取或保存；本版也不提供 Webhook 接收服务。
 
 ## 端点
 
@@ -237,7 +237,7 @@ The legacy prefix is not the default. Use `--base-url https://api.supertoken.cc/
 | `SUPERTOKEN_API_KEY` | Model API Token (`sk-...`) | Model listing, sync generation, sync editing, async creation |
 | `SUPERTOKEN_RESOURCE_API_KEY` | Resource API Key (`ak_...`) | Async task queries and waits |
 
-The two keys are read and stored separately. Known type swaps from environment variables or secure storage are rejected before a request. Explicit `--api-key` and `--resource-api-key` values are not prefix-validated, so callers must select them according to the table above. The CLI does not read or store a `wk-...` Webhook Key, and this version does not run a Webhook receiver.
+The two keys are read and stored separately. Known type swaps from environment variables, secure storage, or explicit `--api-key` and `--resource-api-key` values are rejected before a request; unknown prefixes remain compatible with custom services. The CLI does not read or store a `wk-...` Webhook Key, and this version does not run a Webhook receiver.
 
 ### Endpoints
 

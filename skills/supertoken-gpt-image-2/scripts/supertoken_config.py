@@ -305,11 +305,15 @@ def _validate_key_kind(value, spec):
     return value
 
 
+def validate_api_key(value, kind=MODEL_KEY):
+    return _validate_key_kind(value, _credential_spec(kind))
+
+
 def get_api_key(kind=MODEL_KEY):
     spec = _credential_spec(kind)
     env_key = os.environ.get(spec.env_name)
     if env_key:
-        return _validate_key_kind(env_key, spec)
+        return validate_api_key(env_key, kind)
     system = platform.system()
     if system == "Darwin":
         value = _macos_read_key(spec)
@@ -318,14 +322,14 @@ def get_api_key(kind=MODEL_KEY):
     else:
         value = _linux_read_key(spec)
     value = value or _plaintext_read_key(spec)
-    return _validate_key_kind(value, spec) if value else None
+    return validate_api_key(value, kind) if value else None
 
 
 def save_api_key(api_key, allow_plaintext=False, kind=MODEL_KEY):
     spec = _credential_spec(kind)
     if not api_key:
         raise ConfigError(f"需要 {spec.env_name} 对应的 Key。")
-    _validate_key_kind(api_key, spec)
+    validate_api_key(api_key, kind)
     system = platform.system()
     if not os.environ.get(DISABLE_SECURE_STORE_ENV):
         writers = {

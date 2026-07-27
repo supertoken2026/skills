@@ -194,7 +194,7 @@ def _open(request, timeout):
             return ApiResponse(response.status, dict(response.headers), response.read())
     except urllib.error.HTTPError as exc:
         try:
-            return ApiResponse(exc.code, dict(exc.headers), exc.read())
+            return ApiResponse(exc.code, dict(exc.headers or {}), exc.read())
         finally:
             exc.close()
 

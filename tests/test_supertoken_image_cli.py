@@ -132,6 +132,86 @@ class ModelListingTests(unittest.TestCase):
         )
 
 
+class ExplicitCliKeyTests(unittest.TestCase):
+    def test_explicit_model_key_rejects_resource_and_webhook_keys_before_requests(self):
+        cases = {
+            "models": ["models"],
+            "sync-generate": [
+                "generate", "--prompt", "cat", "--output", "cat.png",
+            ],
+            "async-generate": ["generate", "--prompt", "cat", "--async"],
+            "sync-edit": [
+                "edit", "--prompt", "combine", "--image", "https://img.example/one.png",
+                "--output", "result.png",
+            ],
+            "async-edit": [
+                "edit", "--prompt", "combine", "--image", "https://img.example/one.png",
+                "--async",
+            ],
+        }
+        unexpected_response = api_response({"error": "unexpected"}, status=400)
+        with patch.object(
+            cli.api, "request_json", return_value=unexpected_response,
+        ) as json_request:
+            with patch.object(cli.api, "request_multipart") as multipart_request:
+                for name, argv in cases.items():
+                    for wrong_key in ("ak_explicit_test", "wk-explicit-test"):
+                        with self.subTest(command=name, key=wrong_key):
+                            code, _stdout, stderr = run_cli(
+                                [*argv, "--api-key", wrong_key]
+                            )
+                            self.assertEqual(code, 2)
+                            self.assertIn("SUPERTOKEN_API_KEY", stderr)
+                json_request.assert_not_called()
+                multipart_request.assert_not_called()
+
+    def test_explicit_resource_key_rejects_model_and_webhook_keys_before_requests(self):
+        cases = {
+            "task": ["task", "task_test"],
+            "wait": ["wait", "task_test", "--output", "result.png"],
+            "async-generate-wait": [
+                "generate", "--prompt", "cat", "--async", "--wait", "--output", "result.png",
+            ],
+            "async-edit-wait": [
+                "edit", "--prompt", "combine", "--image", "https://img.example/one.png",
+                "--async", "--wait", "--output", "result.png",
+            ],
+        }
+        environment = {config.API_KEY_ENV: "custom-model-key"}
+        unexpected_response = api_response({"error": "unexpected"}, status=400)
+        with patch.object(
+            cli.api, "request_json", return_value=unexpected_response,
+        ) as json_request:
+            with patch.object(cli.api, "request_multipart") as multipart_request:
+                for name, argv in cases.items():
+                    for wrong_key in ("sk-explicit-test", "wk-explicit-test"):
+                        with self.subTest(command=name, key=wrong_key):
+                            code, _stdout, stderr = run_cli(
+                                [*argv, "--resource-api-key", wrong_key], environment,
+                            )
+                            self.assertEqual(code, 2)
+                            self.assertIn("SUPERTOKEN_RESOURCE_API_KEY", stderr)
+                json_request.assert_not_called()
+                multipart_request.assert_not_called()
+
+    def test_explicit_unknown_key_prefixes_remain_compatible(self):
+        models_response = api_response({"data": []})
+        task_response = api_response({"id": "task_test", "status": "queued"})
+        with patch.object(
+            cli.api, "request_json", side_effect=[models_response, task_response],
+        ) as request:
+            models_code, _stdout, models_stderr = run_cli([
+                "models", "--api-key", "custom-model-key",
+            ])
+            task_code, _stdout, task_stderr = run_cli([
+                "task", "task_test", "--resource-api-key", "custom-resource-key",
+            ])
+
+        self.assertEqual(models_code, 0, models_stderr)
+        self.assertEqual(task_code, 0, task_stderr)
+        self.assertEqual(request.call_count, 2)
+
+
 class SyncGenerationTests(unittest.TestCase):
     def test_generation_saves_every_image_and_reports_all_outputs(self):
         items = [
@@ -314,13 +394,14 @@ class SyncEditTests(unittest.TestCase):
                     "--output", str(Path(temp_dir) / "result.png"),
                 ], {config.API_KEY_ENV: "test-key"})
         self.assertEqual(code, 0, stderr)
+        request.assert_called_once()
         payload = request.call_args.args[4]
         self.assertEqual(payload["image"], [
             "https://img.example/one.png", "https://img.example/two.png"
         ])
         self.assertEqual(json.loads(stdout)["operation"], "edit")
 
-    def test_data_url_and_base64_file_edit_use_json_objects(self):
+    def test_base64_file_edit_uses_json_objects(self):
         encoded = base64.b64encode(PNG_BYTES).decode("ascii")
         response = api_response({"data": [{"b64_json": encoded}]})
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -335,6 +416,7 @@ class SyncEditTests(unittest.TestCase):
                 ], {config.API_KEY_ENV: "test-key"})
 
         self.assertEqual(code, 0, stderr)
+        request.assert_called_once()
         self.assertEqual(request.call_args.args[4]["image"], [
             {"b64_json": encoded}, {"b64_json": encoded},
         ])
@@ -389,6 +471,7 @@ class SyncEditTests(unittest.TestCase):
                 ], {config.API_KEY_ENV: "test-key"})
 
         self.assertEqual(code, 0, stderr)
+        request.assert_called_once()
         method, url, key, timeout, fields, files = request.call_args.args
         self.assertEqual((method, url, key, timeout), (
             "POST", "https://api.supertoken.cc/v1/images/edits", "test-key", 300,
@@ -415,6 +498,7 @@ class SyncEditTests(unittest.TestCase):
                 ], {config.API_KEY_ENV: "test-key"})
 
         self.assertEqual(code, 0, stderr)
+        request.assert_called_once()
         files = request.call_args.args[5]
         self.assertEqual([item.field for item in files], ["image", "mask"])
         self.assertEqual(files[1].content_type, "image/png")
@@ -551,6 +635,7 @@ class SyncEditTests(unittest.TestCase):
 
             result = json.loads(stdout)
             self.assertEqual(code, 0, stderr)
+            request.assert_called_once()
             self.assertEqual(request.call_args.args[0:4], (
                 "POST", "https://api.supertoken.cc/v1/images/edits", "test-key", 300,
             ))
