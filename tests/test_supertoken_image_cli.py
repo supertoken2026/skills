@@ -108,6 +108,20 @@ class ParserTests(unittest.TestCase):
 
 
 class ModelListingTests(unittest.TestCase):
+    def test_explicit_api_base_is_validated_before_requests_or_persistence(self):
+        with patch.object(cli.api, "request_json") as request:
+            with patch.object(cli, "save_config") as save:
+                code, _stdout, stderr = run_cli(
+                    ["models", "--base-url", "http://user:secret@example.test/v1"],
+                    {config.API_KEY_ENV: "test-key"},
+                )
+
+        self.assertEqual(code, 2)
+        self.assertIn("base_url", stderr)
+        self.assertNotIn("secret", stderr)
+        request.assert_not_called()
+        save.assert_not_called()
+
     def test_explicit_base_url_refreshes_existing_config_without_losing_model(self):
         current = config.build_config(
             base_url="https://old-proxy.example/v1", model="custom-image-model",
@@ -138,7 +152,6 @@ class ModelListingTests(unittest.TestCase):
                 {"id": "gpt-image-2"},
                 {"id": "gpt-image-2-count"},
                 {"id": "gpt-4.1"},
-                {"id": 7},
             ],
         })
         environment = {config.API_KEY_ENV: "test-key"}
@@ -161,6 +174,59 @@ class ModelListingTests(unittest.TestCase):
             json.loads(stdout),
             {"models": ["gpt-image-2", "gpt-image-2-count", "gpt-4.1"]},
         )
+
+    def test_models_rejects_malformed_success_schemas_without_traceback(self):
+        malformed = [
+            {"data": None},
+            {"data": [{}]},
+            {"data": [{"id": 7}]},
+            {"data": ["gpt-image-2"]},
+        ]
+        for payload in malformed:
+            with self.subTest(payload=payload):
+                with patch.object(
+                    cli.api, "request_json", return_value=api_response(payload)
+                ) as request:
+                    code, stdout, stderr = run_cli(
+                        ["models"], {config.API_KEY_ENV: "test-key"}
+                    )
+                self.assertEqual(code, 1)
+                self.assertEqual(stdout, "")
+                self.assertIn("模型列表", stderr)
+                self.assertNotIn("Traceback", stderr)
+                request.assert_called_once()
+
+    def test_models_redacts_server_controlled_credentials_and_signed_urls(self):
+        response = api_response({
+            "data": [
+                {"id": "gpt-image-2-sk-serversecret123"},
+                {
+                    "id": (
+                        "https://user:pass@example.test/gpt-image-2"
+                        "?token=signed-secret#fragment"
+                    )
+                },
+            ],
+        })
+        with patch.object(cli.api, "request_json", return_value=response):
+            code, stdout, stderr = run_cli(
+                ["models", "--all"], {config.API_KEY_ENV: "test-key"}
+            )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(
+            json.loads(stdout),
+            {
+                "models": [
+                    "gpt-image-2-[REDACTED]",
+                    "https://example.test/gpt-image-2",
+                ]
+            },
+        )
+        for secret in (
+            "sk-serversecret123", "user:pass", "signed-secret", "fragment"
+        ):
+            self.assertNotIn(secret, stdout)
 
 
 class ExplicitCliKeyTests(unittest.TestCase):
@@ -281,12 +347,12 @@ class SyncGenerationTests(unittest.TestCase):
                     "model": "gpt-image-2",
                     "outputs": [
                         {
-                            "path": str(Path(temp_dir, "output-1.png").resolve()),
+                            "path": str(Path(temp_dir, "output-1.png").absolute()),
                             "bytes": len(PNG_BYTES),
                             "format": "png",
                         },
                         {
-                            "path": str(Path(temp_dir, "output-2.png").resolve()),
+                            "path": str(Path(temp_dir, "output-2.png").absolute()),
                             "bytes": len(PNG_BYTES),
                             "format": "png",
                         },
@@ -332,8 +398,12 @@ class SyncGenerationTests(unittest.TestCase):
 
     def test_raw_diagnostic_redacts_explicit_and_recognized_keys_atomically(self):
         explicit = "explicit-secret"
+        encoded = base64.b64encode(PNG_BYTES).decode("ascii")
         response = api_response({
-            "data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}],
+            "data": [{
+                "b64_json": encoded,
+                "url": "https://user:pass@cdn.example/image.png?token=signed#part",
+            }],
             "detail": f"{explicit} sk-123456789 ak_123456789 wk-123456789",
         })
         environment = {config.API_KEY_ENV: explicit}
@@ -355,6 +425,8 @@ class SyncGenerationTests(unittest.TestCase):
             self.assertTrue(stdout)
             self.assertFalse(Path(f"{raw_json}.part").exists())
             for secret in (explicit, "sk-123456789", "ak_123456789", "wk-123456789"):
+                self.assertNotIn(secret, diagnostic)
+            for secret in (encoded, "user:pass", "signed", "#part"):
                 self.assertNotIn(secret, diagnostic)
 
     def test_generation_payload_keeps_legacy_optional_parameter_behavior(self):
@@ -449,6 +521,7 @@ class SyncEditTests(unittest.TestCase):
         self.assertEqual(payload["image"], [
             "https://img.example/one.png", "https://img.example/two.png"
         ])
+        self.assertEqual(payload["n"], 1)
         self.assertEqual(json.loads(stdout)["operation"], "edit")
 
     def test_base64_file_edit_uses_json_objects(self):
@@ -526,7 +599,10 @@ class SyncEditTests(unittest.TestCase):
         self.assertEqual((method, url, key, timeout), (
             "POST", "https://api.supertoken.cc/v1/images/edits", "test-key", 300,
         ))
-        self.assertEqual([field for field, _value in fields], ["model", "prompt", "size", "quality"])
+        self.assertEqual(
+            [field for field, _value in fields],
+            ["model", "prompt", "n", "size", "quality"],
+        )
         self.assertEqual([(item.field, item.content_type) for item in files], [
             ("image", "image/png"), ("image", "image/png"),
         ])
@@ -680,7 +756,7 @@ class SyncEditTests(unittest.TestCase):
             with patch.object(cli.api, "request_json", return_value=response) as request:
                 code, stdout, stderr = run_cli([
                     "edit", "--prompt", "combine", "--image", "https://img.example/one.png",
-                    "--output", str(output),
+                    "--model", "gpt-image-2", "--n", "2", "--output", str(output),
                 ], {config.API_KEY_ENV: "test-key"})
 
             result = json.loads(stdout)
@@ -694,8 +770,51 @@ class SyncEditTests(unittest.TestCase):
             self.assertEqual(Path(result["outputs"][0]["path"]).read_bytes(), PNG_BYTES)
             self.assertEqual(Path(result["outputs"][1]["path"]).read_bytes(), PNG_BYTES)
 
+    def test_count_model_rejects_multiple_sync_edit_results_before_request(self):
+        cases = [
+            ["--image", "https://img.example/one.png"],
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            source.write_bytes(PNG_BYTES)
+            cases.append(["--image", str(source)])
+            for input_args in cases:
+                with self.subTest(input_args=input_args):
+                    with patch.object(cli.api, "request_json") as json_request:
+                        with patch.object(cli.api, "request_multipart") as multipart_request:
+                            code, _stdout, stderr = run_cli([
+                                "edit", "--prompt", "combine", *input_args,
+                                "--n", "2", "--output", str(Path(temp_dir) / "result.png"),
+                            ], {config.API_KEY_ENV: "test-key"})
+                    self.assertEqual(code, 2)
+                    self.assertIn("gpt-image-2-count", stderr)
+                    json_request.assert_not_called()
+                    multipart_request.assert_not_called()
+
+    def test_sync_command_rejects_a_result_count_different_from_requested(self):
+        encoded = base64.b64encode(PNG_BYTES).decode("ascii")
+        response = api_response({"data": [{"b64_json": encoded}]})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "result.png"
+            with patch.object(cli.api, "request_json", return_value=response):
+                code, stdout, stderr = run_cli([
+                    "generate", "--prompt", "cat", "--model", "gpt-image-2",
+                    "--n", "2", "--output", str(output),
+                ], {config.API_KEY_ENV: "test-key"})
+
+            self.assertEqual(code, 1)
+            self.assertEqual(stdout, "")
+            self.assertIn("2", stderr)
+            self.assertFalse(output.exists())
+
 
 class AsyncTaskTests(unittest.TestCase):
+    def test_async_url_mask_requires_a_nonempty_network_location(self):
+        with self.assertRaisesRegex(api.ApiUsageError, "URL Mask"):
+            cli.classify_edit_inputs(
+                ["https://img.example/one.png"], [], "https:///mask.png", True
+            )
+
     def test_async_payloads_use_documented_json_field_locations(self):
         args = SimpleNamespace(
             model="gpt-image-2", prompt="rainy street", count=2,
@@ -798,9 +917,20 @@ class AsyncTaskTests(unittest.TestCase):
 
     def test_create_only_reports_task_headers_and_does_not_read_resource_key(self):
         response = api_response(
-            {"id": "task_create", "status": "queued", "progress": 0},
+            {
+                "id": "task_create", "status": "queued", "progress": 0,
+                "result": {"images": [{"b64_json": "server-base64-secret"}]},
+                "arbitrary": "sk-serversecret123",
+            },
             202,
-            {"Location": "/v1/image/tasks/task_create", "Retry-After": "7"},
+            {
+                "Location": (
+                    "https://user:pass@api.example.test/v1/image/tasks/"
+                    "sk-serversecret123/task_create"
+                    "?signature=signed-secret#fragment"
+                ),
+                "Retry-After": "7",
+            },
         )
         with patch.object(cli.uuid, "uuid4", return_value=SimpleNamespace(hex="generated-key")):
             with patch.object(cli.api, "request_json", return_value=response) as request:
@@ -818,9 +948,14 @@ class AsyncTaskTests(unittest.TestCase):
             "status": "queued",
             "progress": 0,
             "idempotency_key": "generated-key",
-            "location": "/v1/image/tasks/task_create",
-            "retry_after": "7",
+            "location": (
+                "https://api.example.test/v1/image/tasks/[REDACTED]/task_create"
+            ),
+            "retry_after": 7,
         })
+        self.assertNotIn("server-base64-secret", stdout)
+        self.assertNotIn("sk-serversecret123", stdout)
+        self.assertNotIn("signed-secret", stdout)
         self.assertEqual(request.call_count, 1)
         self.assertEqual(request.call_args.kwargs["headers"], {
             "Idempotency-Key": "generated-key",
@@ -830,34 +965,102 @@ class AsyncTaskTests(unittest.TestCase):
         ))
 
     def test_create_rejects_malformed_task_id_without_reporting_it(self):
-        malformed_id = "bad/sk-model123456"
-        response = api_response({"id": malformed_id, "status": "queued"}, 202)
+        for malformed_id in ("bad/sk-model123456", "task_sk-serversecret123"):
+            with self.subTest(malformed_id=malformed_id):
+                response = api_response(
+                    {"id": malformed_id, "status": "queued"}, 202
+                )
+                with patch.object(
+                    cli.api, "request_json", return_value=response
+                ) as request:
+                    code, stdout, stderr = run_cli([
+                        "generate", "--async", "--prompt", "cat",
+                        "--idempotency-key", "request-key",
+                    ], {config.API_KEY_ENV: "model-key"})
+
+                self.assertEqual(code, 1)
+                self.assertEqual(stdout, "")
+                self.assertEqual(request.call_count, 1)
+                self.assertIn("任务 ID", stderr)
+                self.assertNotIn(malformed_id, stderr)
+
+    def test_idempotency_key_accepts_only_ascii_http_vchar(self):
+        invalid = [
+            "", " ", "has space", "tab\tvalue", "line\nvalue", "nul\x00value",
+            "delete\x7fvalue", "unicode-\u96ea", "x" * 129,
+        ]
+        for value in invalid:
+            with self.subTest(value=repr(value)):
+                with patch.object(cli.api, "request_json") as request:
+                    code, _stdout, stderr = run_cli([
+                        "generate", "--async", "--prompt", "cat",
+                        "--idempotency-key", value,
+                    ], {config.API_KEY_ENV: "model-key"})
+                self.assertEqual(code, 2)
+                self.assertIn("Idempotency-Key", stderr)
+                request.assert_not_called()
+
+        valid = "!request-key~"
+        response = api_response({"id": "task_valid_key", "status": "queued"}, 202)
         with patch.object(cli.api, "request_json", return_value=response) as request:
             code, stdout, stderr = run_cli([
                 "generate", "--async", "--prompt", "cat",
-                "--idempotency-key", "request-key",
+                "--idempotency-key", valid,
             ], {config.API_KEY_ENV: "model-key"})
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["idempotency_key"], valid)
+        self.assertEqual(request.call_args.kwargs["headers"], {
+            "Idempotency-Key": valid,
+        })
+
+    def test_active_api_key_is_redacted_when_reused_as_idempotency_key(self):
+        active_key = "sk-modelsecret123"
+        success = api_response(
+            {"id": "task_safe_idempotency", "status": "queued"}, 202
+        )
+        with patch.object(cli.api, "request_json", return_value=success):
+            code, stdout, stderr = run_cli([
+                "generate", "--async", "--prompt", "cat",
+                "--idempotency-key", active_key,
+            ], {config.API_KEY_ENV: active_key})
+
+        self.assertEqual(code, 0, stderr)
+        self.assertNotIn(active_key, stdout)
+        self.assertEqual(json.loads(stdout)["idempotency_key"], "[REDACTED]")
+
+        with patch.object(
+            cli.api, "request_json", side_effect=urllib.error.URLError("offline")
+        ):
+            code, stdout, stderr = run_cli([
+                "generate", "--async", "--prompt", "cat",
+                "--idempotency-key", active_key,
+            ], {config.API_KEY_ENV: active_key})
 
         self.assertEqual(code, 1)
         self.assertEqual(stdout, "")
-        self.assertEqual(request.call_count, 1)
-        self.assertIn("任务 ID", stderr)
-        self.assertNotIn(malformed_id, stderr)
+        self.assertNotIn(active_key, stderr)
+        self.assertIn("[REDACTED]", stderr)
 
-    def test_provided_empty_idempotency_key_is_not_replaced(self):
-        response = api_response({"id": "task_empty_key", "status": "queued"}, 202)
-        with patch.object(cli.uuid, "uuid4", side_effect=AssertionError("uuid")):
-            with patch.object(cli.api, "request_json", return_value=response) as request:
-                code, stdout, stderr = run_cli([
-                    "generate", "--async", "--prompt", "cat",
-                    "--idempotency-key", "",
-                ], {config.API_KEY_ENV: "model-key"})
-
-        self.assertEqual(code, 0, stderr)
-        self.assertEqual(json.loads(stdout)["idempotency_key"], "")
-        self.assertEqual(request.call_args.kwargs["headers"], {
-            "Idempotency-Key": "",
-        })
+    def test_async_create_rejects_malformed_summary_fields(self):
+        malformed = [
+            {"id": "task_bad", "status": "unknown"},
+            {"id": "task_bad", "status": "queued", "progress": True},
+            {"id": "task_bad", "status": "queued", "progress": 101},
+        ]
+        for payload in malformed:
+            with self.subTest(payload=payload):
+                with patch.object(
+                    cli.api, "request_json", return_value=api_response(payload, 202)
+                ) as request:
+                    code, stdout, stderr = run_cli([
+                        "generate", "--async", "--prompt", "cat",
+                        "--idempotency-key", "request-key",
+                    ], {config.API_KEY_ENV: "model-key"})
+                self.assertEqual(code, 1)
+                self.assertEqual(stdout, "")
+                self.assertIn("异步创建响应", stderr)
+                self.assertNotIn("Traceback", stderr)
+                request.assert_called_once()
 
     def test_async_wait_uses_model_key_for_post_resource_key_for_gets_and_saves_all(self):
         encoded = base64.b64encode(PNG_BYTES).decode("ascii")
@@ -886,7 +1089,8 @@ class AsyncTaskTests(unittest.TestCase):
                 with patch.object(cli.poll_task, "__defaults__", defaults):
                     code, stdout, stderr = run_cli([
                         "generate", "--async", "--wait", "--prompt", "cat",
-                        "--model", "gpt-image-2", "--output", str(output),
+                        "--model", "gpt-image-2", "--n", "2",
+                        "--output", str(output),
                         "--idempotency-key", "provided-key",
                     ], {
                         config.API_KEY_ENV: "model-key",
@@ -932,6 +1136,86 @@ class AsyncTaskTests(unittest.TestCase):
             )
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(sleeps, [7, 7, 7])
+
+    def test_polling_limits_get_and_sleep_to_one_deadline(self):
+        time_values = iter([0.0, 0.0, 7.0, 9.0, 10.0])
+        timeouts = []
+        sleeps = []
+
+        def query(_base, _key, _task_id, timeout):
+            timeouts.append(timeout)
+            return {"id": "task_deadline", "status": "queued"}, {}
+
+        with patch.object(cli, "query_task", side_effect=query):
+            with self.assertRaisesRegex(api.ApiResponseError, "task_deadline"):
+                cli.poll_task(
+                    "https://api.example", "resource-key", "task_deadline",
+                    timeout=30, wait_timeout=10, initial_retry_after=5,
+                    sleep=sleeps.append, monotonic=lambda: next(time_values),
+                )
+
+        self.assertEqual(timeouts, [10.0, 1.0])
+        self.assertEqual(sleeps, [3.0])
+
+    def test_wait_deadline_also_limits_result_downloads_and_rolls_back(self):
+        task = {
+            "id": "task_download_deadline",
+            "status": "succeeded",
+            "result": {
+                "images": [
+                    {"url": "https://images.example.test/one.png"},
+                    {"url": "https://images.example.test/two.png"},
+                ]
+            },
+        }
+        time_values = iter([0.0, 8.0, 9.0, 9.5, 10.1])
+        download_timeouts = []
+
+        def download(_url, timeout):
+            download_timeouts.append(timeout)
+            return PNG_BYTES
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "result.png"
+            with patch.object(cli, "poll_task", return_value=task):
+                with patch.object(cli.api, "download_image", side_effect=download):
+                    with patch.object(
+                        cli.time, "monotonic", side_effect=lambda: next(time_values)
+                    ):
+                        code, stdout, stderr = run_cli([
+                            "wait", "task_download_deadline",
+                            "--output", str(output),
+                            "--timeout", "30", "--wait-timeout", "10",
+                        ], {config.RESOURCE_API_KEY_ENV: "resource-key"})
+
+            self.assertEqual(code, 1)
+            self.assertEqual(stdout, "")
+            self.assertIn("task_download_deadline", stderr)
+            self.assertIn("10", stderr)
+            self.assertEqual(download_timeouts, [2.0, 0.5])
+            self.assertFalse(output.exists())
+            self.assertFalse(output.with_name("result-1.png").exists())
+            self.assertFalse(output.with_name("result-2.png").exists())
+
+    def test_nonpositive_wait_timeout_is_usage_error_before_request(self):
+        commands = [
+            ["wait", "task_deadline", "--output", "unused.png", "--wait-timeout", "0"],
+            [
+                "generate", "--async", "--wait", "--prompt", "cat",
+                "--output", "unused.png", "--wait-timeout", "-1",
+            ],
+        ]
+        environment = {
+            config.API_KEY_ENV: "model-key",
+            config.RESOURCE_API_KEY_ENV: "resource-key",
+        }
+        for argv in commands:
+            with self.subTest(argv=argv):
+                with patch.object(cli.api, "request_json") as request:
+                    code, _stdout, stderr = run_cli(argv, environment)
+                self.assertEqual(code, 2)
+                self.assertIn("--wait-timeout", stderr)
+                request.assert_not_called()
 
     def test_task_failed_redacts_server_supplied_credentials(self):
         error = cli.TaskFailed(
@@ -1011,7 +1295,7 @@ class AsyncTaskTests(unittest.TestCase):
         self.assertIn("task_requested", stderr)
         self.assertNotIn("Traceback", stderr)
 
-    def test_wait_uses_requested_id_in_success_output(self):
+    def test_wait_rejects_a_mismatched_server_task_id(self):
         server_id = "task_server_secret"
         response = api_response({
             "id": server_id,
@@ -1029,9 +1313,85 @@ class AsyncTaskTests(unittest.TestCase):
                     "wait", "task_requested", "--output", str(output),
                 ], {config.RESOURCE_API_KEY_ENV: "resource-key"})
 
-        self.assertEqual(code, 0, stderr)
-        self.assertEqual(json.loads(stdout)["task_id"], "task_requested")
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("task_requested", stderr)
         self.assertNotIn(server_id, stdout)
+        self.assertNotIn(server_id, stderr)
+
+    def test_task_stdout_is_a_fixed_allowlist_summary(self):
+        secret = "sk-serversecret123"
+        response = api_response({
+            "id": "task_requested",
+            "status": "succeeded",
+            "progress": 100,
+            "result": {
+                "images": [{
+                    "url": "https://cdn.example/image.png?signature=signed-secret",
+                    "b64_json": "base64-secret",
+                }],
+            },
+            "unknown": secret,
+        })
+        with patch.object(cli.api, "request_json", return_value=response):
+            code, stdout, stderr = run_cli(
+                ["task", "task_requested"],
+                {config.RESOURCE_API_KEY_ENV: "resource-key"},
+            )
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout), {
+            "task_id": "task_requested", "status": "succeeded", "progress": 100,
+        })
+        for value in (secret, "signed-secret", "base64-secret"):
+            self.assertNotIn(value, stdout)
+
+    def test_task_failed_stdout_contains_only_sanitized_error_summary(self):
+        response = api_response({
+            "id": "task_failed",
+            "status": "failed",
+            "error": {
+                "code": "blocked-sk-serversecret123",
+                "message": "policy ak_resource123456",
+                "retryable": False,
+            },
+        })
+        with patch.object(cli.api, "request_json", return_value=response):
+            code, stdout, stderr = run_cli(
+                ["task", "task_failed"],
+                {config.RESOURCE_API_KEY_ENV: "resource-key"},
+            )
+
+        self.assertEqual(code, 0, stderr)
+        summary = json.loads(stdout)
+        self.assertEqual(set(summary), {"task_id", "status", "error"})
+        self.assertEqual(set(summary["error"]), {"code", "message", "retryable"})
+        self.assertNotIn("sk-serversecret123", stdout)
+        self.assertNotIn("ak_resource123456", stdout)
+
+    def test_task_query_rejects_missing_id_and_malformed_status_fields(self):
+        malformed = [
+            {"status": "queued"},
+            {"id": "task_requested", "status": "other"},
+            {"id": "task_requested", "status": "queued", "progress": False},
+            {
+                "id": "task_requested", "status": "failed",
+                "error": {"code": 7, "message": "bad", "retryable": False},
+            },
+        ]
+        for payload in malformed:
+            with self.subTest(payload=payload):
+                with patch.object(
+                    cli.api, "request_json", return_value=api_response(payload)
+                ):
+                    code, stdout, stderr = run_cli(
+                        ["task", "task_requested"],
+                        {config.RESOURCE_API_KEY_ENV: "resource-key"},
+                    )
+                self.assertEqual(code, 1)
+                self.assertEqual(stdout, "")
+                self.assertIn("task_requested", stderr)
+                self.assertNotIn("Traceback", stderr)
 
     def test_wait_reports_failed_task_without_resubmitting(self):
         failed = api_response({
@@ -1165,6 +1525,23 @@ class AsyncTaskTests(unittest.TestCase):
         self.assertNotIn("explicit-resource-key", str(raised.exception))
         self.assertEqual(request.call_count, 1)
 
+    def test_task_query_rejects_a_schema_shaped_redirect_response(self):
+        response = api_response(
+            {"id": "task_requested", "status": "queued"},
+            302,
+            {"Location": "https://other.example/task_requested"},
+        )
+        with patch.object(cli.api, "request_json", return_value=response) as request:
+            code, stdout, stderr = run_cli(
+                ["task", "task_requested"],
+                {config.RESOURCE_API_KEY_ENV: "resource-key"},
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("HTTP 302", stderr)
+        request.assert_called_once()
+
     def test_post_failure_is_not_retried_and_prints_recovery_key(self):
         with patch.object(cli.api, "request_json", side_effect=urllib.error.URLError("offline")) as request:
             code, _stdout, stderr = run_cli([
@@ -1175,6 +1552,29 @@ class AsyncTaskTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(request.call_count, 1)
         self.assertIn("recovery-key", stderr)
+
+    def test_transport_failure_stderr_redacts_keys_and_url_secrets(self):
+        explicit = "explicit-model-secret"
+        signed_url = (
+            "https://user:pass@example.test/path?signature=signed-secret#fragment"
+        )
+        failure = urllib.error.URLError(
+            f"connection {explicit} sk-serversecret123 {signed_url}"
+        )
+        with patch.object(cli.api, "request_json", side_effect=failure) as request:
+            code, stdout, stderr = run_cli([
+                "generate", "--prompt", "cat", "--output", "unused.png",
+                "--api-key", explicit,
+            ])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(request.call_count, 1)
+        self.assertIn("https://example.test/path", stderr)
+        for forbidden in (
+            explicit, "sk-serversecret123", "user:pass", "signed-secret", "fragment",
+        ):
+            self.assertNotIn(forbidden, stderr)
 
     def test_resource_key_and_async_option_validation_happen_before_requests(self):
         cases = [

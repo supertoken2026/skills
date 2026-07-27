@@ -33,12 +33,14 @@
 
 旧版前缀不是默认值。只有调用兼容服务或明确测试旧版同步接口时，才通过 `--base-url https://api.supertoken.cc/image-wrapper/v1` 单次覆盖。`models`、异步创建、`task` 和 `wait` 会拒绝旧版前缀。
 
+自定义基址必须是可规范化的绝对 HTTPS 地址。CLI 会去除首尾 ASCII 空白、末尾斜线和默认端口 `:443`，并统一 scheme 与 host 的大小写；用户信息、查询参数、片段、控制字符、路径空白、重复分隔符、点段及编码后的斜线都不允许。认证请求不跟随 3xx，也不会把 `Authorization` 或 `Idempotency-Key` 转发到重定向目标。
+
 | 环境变量 | Key 类型 | 用途 |
 | --- | --- | --- |
 | `SUPERTOKEN_API_KEY` | 模型 API Token（`sk-...`） | 模型列表、同步生成、同步编辑、异步创建 |
 | `SUPERTOKEN_RESOURCE_API_KEY` | 资源 API Key（`ak_...`） | 异步任务查询与等待 |
 
-两种 Key 分开读取和存储。CLI 会在请求前拒绝环境变量、安全存储或显式 `--api-key` 和 `--resource-api-key` 中已知的 Key 类型混用；未知前缀仍可用于兼容的自定义服务。`wk-...` Webhook Key 不会被读取或保存；本版也不提供 Webhook 接收服务。
+两种 Key 分开读取和存储。CLI 会先去除 Key 首尾空白并拒绝控制字符，再检查环境变量、安全存储或显式参数中已知的 Key 类型混用；未知前缀仍可用于兼容的自定义服务。`wk-...` Webhook Key 不会被读取或保存；本版也不提供 Webhook 接收服务。
 
 ## 端点
 
@@ -78,6 +80,7 @@ URL 输入使用顶层字符串数组：
 {
   "model": "gpt-image-2-count",
   "prompt": "改成黑白铅笔素描",
+  "n": 1,
   "size": "1024x1024",
   "quality": "low",
   "image": ["https://example.com/source.png"]
@@ -90,25 +93,26 @@ Base64 输入使用对象数组：
 {
   "model": "gpt-image-2-count",
   "prompt": "改成黑白铅笔素描",
+  "n": 1,
   "size": "1024x1024",
   "quality": "low",
   "image": [{"b64_json": "..."}]
 }
 ```
 
-`--format` 映射到 `output_format`，`--background` 映射到 `background`。`--param` 和 `--json-params` 也只合并到同步请求的顶层。同步编辑的通用 `--n` 选项不会写入请求；需要多结果时，使用 `--model gpt-image-2 --param n=4`。同步 URL 或 Base64 编辑不接受 Mask。
+`--format` 映射到 `output_format`，`--background` 映射到 `background`。`--param` 和 `--json-params` 也只合并到同步请求的顶层。同步编辑会发送 `n`；`gpt-image-2-count` 只允许 `n=1`，需要多结果时应使用 `--model gpt-image-2 --n 4`。同步 URL 或 Base64 编辑不接受 Mask。
 
 ### 编辑 multipart
 
 本地同步编辑使用 `multipart/form-data`：
 
-- 文本字段：`model`、`prompt`、`size`、`quality`，以及按需出现的 `output_format`、`background` 和同步额外参数。
+- 文本字段：`model`、`prompt`、`n`、`size`、`quality`，以及按需出现的 `output_format`、`background` 和同步额外参数。
 - 每个 `--image` 重复发送一个 `image` 文件字段。
 - 本地 `--mask` 发送一个 `mask` 文件字段。
 
 ## 异步字段
 
-所有异步创建请求发送 `Idempotency-Key`。未传 `--idempotency-key` 时，CLI 会生成一个新值；显式值最多 128 个字符。
+所有异步创建请求发送 `Idempotency-Key`。未传 `--idempotency-key` 时，CLI 会生成一个新值；显式值必须由 1 到 128 个 ASCII 可见非空白字符（`0x21..0x7e`）组成。
 
 ### 生成 JSON
 
@@ -156,7 +160,7 @@ Base64 输入使用对象数组：
 - 可选文本字段：`output_format`、`output_compression`、`background`、`client_reference_id`、`metadata`。
 - 每个本地参考图重复使用 `image` 文件字段；本地 Mask 使用一个 `mask` 文件字段。
 
-异步创建成功后，CLI 输出 `task_id`、`status`、`progress`、`idempotency_key`，以及响应提供时的 `location` 和 `retry_after`。只创建任务时不能传 `--output`。
+异步创建成功后，CLI 只输出本地确定的 `mode`、`operation`、`model`、`idempotency_key`，以及校验后的 `task_id`、`status` 和可选 `progress`。响应提供 `Location` 时只保留 scheme、host 和 path；有效的 `Retry-After` 以数字输出。只创建任务时不能传 `--output`。
 
 ## 编辑输入与上传限制
 
@@ -190,13 +194,15 @@ Base64 输入使用对象数组：
 | `succeeded` | 从 `result.images[]` 保存全部图片 |
 | `failed` | 输出脱敏后的结构化错误并停止；即使 `retryable=true` 也不自动新建任务 |
 
-`task TASK_ID` 查询一次，不下载结果。`wait TASK_ID --output PATH` 会轮询并保存结果。`generate|edit --async --wait --output PATH` 在同一命令中创建、轮询和保存，因此两种 Key 都必须可用。`wait` 默认最长等待 900 秒，可用 `--wait-timeout` 覆盖。
+`task TASK_ID` 查询一次，不下载结果，只输出请求的任务 ID、状态、可选进度和脱敏后的三字段错误摘要。`wait TASK_ID --output PATH` 会轮询并保存结果。`generate|edit --async --wait --output PATH` 在同一命令中创建、轮询和保存，因此两种 Key 都必须可用。`wait` 默认最长等待 900 秒，可用正整数 `--wait-timeout` 覆盖；每次 GET、轮询休眠和结果下载都不得越过同一个单调时钟截止时间。
 
-同步生成、同步编辑和异步创建的 POST 都不自动重试。提交连接中断或响应失败时，CLI 会显示本次 `Idempotency-Key`。确认或手动重试同一个异步请求时必须复用该值；不同请求使用新值。
+同步生成、同步编辑和异步创建的 POST 都不自动重试。提交连接中断或响应失败时，CLI 会显示脱敏后的本次 `Idempotency-Key`；普通恢复键保留原值，当前凭据或具有凭据外观的值会被隐藏。确认或手动重试同一个异步请求时必须复用原值；不同请求使用新值。
 
 任务查询 GET 遇到连接错误、`429`、`502` 或 `503` 时，最多允许连续失败三次。一次成功查询会重置计数。轮询优先采用 `Retry-After`；缺失时使用当前间隔，初始为 2 秒，每次限制在 2 到 30 秒。
 
-同步结果从 `data[]` 保存，异步结果从 `result.images[]` 保存。每张图片先写入 `.part`，完成后再替换目标文件。单图保留请求文件名的主干，多图依次命名为 `name-1.ext`、`name-2.ext`。扩展名统一为识别出的 `.png`、`.jpeg` 或 `.webp`，因此请求的 `.jpg` 会改为 `.jpeg`。成功 JSON 中的 `outputs[].path` 是绝对路径。
+同步结果从 `data[]` 保存，异步结果从 `result.images[]` 保存。同步响应必须返回与请求 `n` 相同的数量；恢复任务接受 1 到 10 张。单张远程图片最多 64 MiB，一次保存的解码结果合计最多 256 MiB。API 成功响应上限为 384 MiB，错误响应上限为 1 MiB。图片先写入目标目录中的唯一临时文件，全部校验通过后再替换目标项；后续项目失败时会清理本次输出。单图保留请求文件名的主干，多图依次命名为 `name-1.ext`、`name-2.ext`。扩展名统一为识别出的 `.png`、`.jpeg` 或 `.webp`，成功 `outputs[].path` 使用不解引用最终组件的绝对路径。
+
+旧版 `generate_image.py` 只接受 v0.1 参数，默认超时仍为 180 秒，不显示或接受现代异步选项。`--json-params` 文件缺失、不可读、编码错误或 JSON 无效时，在请求前以退出码 `2` 结束。
 
 ## 状态码与退出码
 
@@ -208,13 +214,13 @@ Base64 输入使用对象数组：
 | `409` | 说明同一 `Idempotency-Key` 对应了不同请求 |
 | `413` | 说明单文件或 multipart 总量超限 |
 | `429` | 提示请求频率或额度受限；POST 不重试 |
-| `502` / `503` | 保留服务端请求 ID；POST 不重试，任务查询 GET 按上节有限重试 |
-| 其他 `5xx` | 作为临时服务错误报告并保留请求 ID；不扩大 GET 重试范围 |
+| `502` / `503` | 输出脱敏后的服务端请求 ID；POST 不重试，任务查询 GET 按上节有限重试 |
+| 其他 `5xx` | 作为临时服务错误报告并输出脱敏后的请求 ID；不扩大 GET 重试范围 |
 | 非 JSON | 输出最多 1000 字符的脱敏诊断 |
 | JSON 结构异常 | 输出固定的脱敏错误，不回显响应体 |
 | 空图片或无法识别格式 | 删除 `.part`，不报告成功 |
 
-退出码：`0` 表示成功，`1` 表示网络、API 或结果处理失败，`2` 表示参数、配置或凭据错误。诊断会脱敏显式 Key 以及形如 `sk-...`、`ak_...`、`wk-...` 的值。
+退出码：`0` 表示成功，`1` 表示网络、API 或结果处理失败，`2` 表示参数、配置或凭据错误。诊断会脱敏显式 Key、已知 Key 形态、Base64 图片内容，以及 URL 中的用户信息、查询参数和片段。
 
 ## English
 
@@ -232,12 +238,14 @@ The default base is `https://api.supertoken.cc`.
 
 The legacy prefix is not the default. Use `--base-url https://api.supertoken.cc/image-wrapper/v1` only as an explicit one-command override for a compatible service or legacy sync test. `models`, async creation, `task`, and `wait` reject it.
 
+A custom base must be a canonicalizable absolute HTTPS URL. The CLI trims surrounding ASCII whitespace, a trailing slash, and default port `:443`, and lowercases the scheme and host. Userinfo, query, fragment, controls, path whitespace, repeated separators, dot segments, and encoded slashes are rejected. Authenticated requests do not follow 3xx responses or forward `Authorization` or `Idempotency-Key` to a redirect target.
+
 | Environment variable | Key type | Used for |
 | --- | --- | --- |
 | `SUPERTOKEN_API_KEY` | Model API Token (`sk-...`) | Model listing, sync generation, sync editing, async creation |
 | `SUPERTOKEN_RESOURCE_API_KEY` | Resource API Key (`ak_...`) | Async task queries and waits |
 
-The two keys are read and stored separately. Known type swaps from environment variables, secure storage, or explicit `--api-key` and `--resource-api-key` values are rejected before a request; unknown prefixes remain compatible with custom services. The CLI does not read or store a `wk-...` Webhook Key, and this version does not run a Webhook receiver.
+The two keys are read and stored separately. The CLI trims surrounding key whitespace and rejects control characters before checking known type swaps from environment variables, secure storage, or explicit arguments. Unknown prefixes remain compatible with custom services. The CLI does not read or store a `wk-...` Webhook Key, and this version does not run a Webhook receiver.
 
 ### Endpoints
 
@@ -277,6 +285,7 @@ URL references use a top-level string array:
 {
   "model": "gpt-image-2-count",
   "prompt": "Convert this to a black-and-white pencil sketch",
+  "n": 1,
   "size": "1024x1024",
   "quality": "low",
   "image": ["https://example.com/source.png"]
@@ -289,25 +298,26 @@ Base64 references use an object array:
 {
   "model": "gpt-image-2-count",
   "prompt": "Convert this to a black-and-white pencil sketch",
+  "n": 1,
   "size": "1024x1024",
   "quality": "low",
   "image": [{"b64_json": "..."}]
 }
 ```
 
-`--format` maps to `output_format`, and `--background` maps to `background`. `--param` and `--json-params` also merge only into synchronous top-level requests. The general `--n` option is not emitted for sync edits; request multiple results with `--model gpt-image-2 --param n=4`. Sync URL and Base64 edits do not accept a Mask.
+`--format` maps to `output_format`, and `--background` maps to `background`. `--param` and `--json-params` also merge only into synchronous top-level requests. Sync edits send `n`; `gpt-image-2-count` accepts only `n=1`, so use `--model gpt-image-2 --n 4` for multiple results. Sync URL and Base64 edits do not accept a Mask.
 
 #### Edit multipart
 
 Local sync edits use `multipart/form-data`:
 
-- Text fields: `model`, `prompt`, `size`, `quality`, plus optional `output_format`, `background`, and sync extra parameters.
+- Text fields: `model`, `prompt`, `n`, `size`, `quality`, plus optional `output_format`, `background`, and sync extra parameters.
 - Each `--image` produces a repeated `image` file field.
 - A local `--mask` produces one `mask` file field.
 
 ### Asynchronous fields
 
-Every async creation sends `Idempotency-Key`. The CLI generates a new value when `--idempotency-key` is omitted. An explicit value may contain at most 128 characters.
+Every async creation sends `Idempotency-Key`. The CLI generates a new value when `--idempotency-key` is omitted. An explicit value must contain 1-128 ASCII HTTP VCHAR bytes (`0x21..0x7e`).
 
 #### Generation JSON
 
@@ -355,7 +365,7 @@ Local async edits use flat multipart fields:
 - Optional text: `output_format`, `output_compression`, `background`, `client_reference_id`, and `metadata`.
 - Each local reference repeats the `image` file field; a local Mask uses one `mask` file field.
 
-Successful async creation prints `task_id`, `status`, `progress`, `idempotency_key`, and `location` or `retry_after` when the response supplies them. A create-only invocation must not include `--output`.
+Successful async creation prints only locally derived `mode`, `operation`, `model`, and `idempotency_key`, plus validated `task_id`, `status`, optional `progress`, a scheme/host/path-only `location`, and numeric `retry_after` when available. A create-only invocation must not include `--output`.
 
 ### Edit inputs and upload limits
 
@@ -389,13 +399,15 @@ Input URLs may use HTTP or HTTPS. Result downloads require HTTPS, including the 
 | `succeeded` | Save every image from `result.images[]` |
 | `failed` | Print a redacted structured error and stop; do not create a replacement task even when `retryable=true` |
 
-`task TASK_ID` queries once without downloading. `wait TASK_ID --output PATH` polls and saves. `generate|edit --async --wait --output PATH` creates, polls, and saves in one invocation, so both keys must be available. The default wait limit is 900 seconds and can be changed with `--wait-timeout`.
+`task TASK_ID` queries once without downloading and prints only the requested task ID, status, optional progress, and a redacted three-field error summary. `wait TASK_ID --output PATH` polls and saves. `generate|edit --async --wait --output PATH` creates, polls, and saves in one invocation, so both keys must be available. The default wait limit is 900 seconds; a positive `--wait-timeout` may override it. Every GET, polling sleep, and result download is capped by one monotonic deadline.
 
-Sync generation, sync editing, and async creation POST requests are never retried automatically. If submission loses the connection or returns an error, the CLI prints that attempt's `Idempotency-Key`. Reuse it to confirm or manually retry the same async request. Use a new key for a different request.
+Sync generation, sync editing, and async creation POST requests are never retried automatically. If submission loses the connection or returns an error, the CLI prints that attempt's redacted `Idempotency-Key`; ordinary recovery keys remain intact, while active or credential-shaped values are hidden. Reuse the original value to confirm or manually retry the same async request. Use a new key for a different request.
 
 Task-query GET requests tolerate at most three consecutive connection errors, `429`, `502`, or `503` responses. A successful query resets the count. Polling prefers `Retry-After`; otherwise it keeps the current interval, starting at 2 seconds and clamping every interval to 2 through 30 seconds.
 
-Sync results come from `data[]`; async results come from `result.images[]`. Each image is written to `.part` before replacing the final file. One result keeps the requested stem; multiple results become `name-1.ext`, `name-2.ext`, and so on. The suffix is canonicalized to detected `.png`, `.jpeg`, or `.webp`, so requested `.jpg` becomes `.jpeg`. Successful `outputs[].path` values are absolute.
+Sync results come from `data[]`; async results come from `result.images[]`. A synchronous response must contain exactly the requested `n`; resumed tasks accept 1-10 images. One remote image is limited to 64 MiB and aggregate decoded output to 256 MiB. Successful API bodies are limited to 384 MiB and error bodies to 1 MiB. Unique temporary files are written in the destination directory and promoted only after every item passes validation; a later failure removes outputs from that save. One result keeps the requested stem; multiple results become `name-1.ext`, `name-2.ext`, and so on. The suffix is canonicalized to detected `.png`, `.jpeg`, or `.webp`. Successful `outputs[].path` values are lexical absolute paths that do not dereference the final component.
+
+The legacy `generate_image.py` accepts only the v0.1 options and retains its 180-second default timeout. Modern asynchronous options do not appear in its help and are rejected. A missing, unreadable, invalid-UTF-8, or invalid-JSON `--json-params` file exits with code `2` before a request.
 
 ### Status and exit codes
 
@@ -407,10 +419,10 @@ Sync results come from `data[]`; async results come from `result.images[]`. Each
 | `409` | Explain that one `Idempotency-Key` was used for different requests |
 | `413` | Report the single-file or multipart total limit |
 | `429` | Report rate or credit limits; never retry a POST |
-| `502` / `503` | Preserve the server request ID; do not retry POST, and apply bounded retries only to task-query GET |
-| Other `5xx` | Report a temporary service error and preserve the request ID without broadening GET retries |
+| `502` / `503` | Print a sanitized server request ID; do not retry POST, and apply bounded retries only to task-query GET |
+| Other `5xx` | Report a temporary service error with a sanitized request ID without broadening GET retries |
 | Non-JSON | Print up to 1000 characters of redacted diagnostics |
 | Structurally malformed JSON | Print a fixed redacted error without echoing the response body |
 | Empty or unrecognized image | Remove `.part` and do not report success |
 
-Exit code `0` means success, `1` means a network, API, or result-processing failure, and `2` means a parameter, configuration, or credential error. Diagnostics redact explicit secrets and values shaped like `sk-...`, `ak_...`, or `wk-...`.
+Exit code `0` means success, `1` means a network, API, or result-processing failure, and `2` means a parameter, configuration, or credential error. Diagnostics redact explicit secrets, known key shapes, Base64 image bodies, and URL userinfo, query, and fragment.

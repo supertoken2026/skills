@@ -143,7 +143,7 @@ python3 skills/supertoken-gpt-image-2/scripts/supertoken_image.py edit \
   --output ./sketch.png
 ```
 
-一次 `edit` 只能使用本地文件、URL 或 Base64 中的一种，不能混用。本地 Mask 只能配合本地图片；异步 URL 编辑可使用 URL Mask。Base64 只支持同步编辑，建议通过 `--image-base64-file ./image.txt` 读取，避免把长内容写进命令历史。
+一次 `edit` 只能使用本地文件、URL 或 Base64 中的一种，不能混用。本地 Mask 只能配合本地图片；异步 URL 编辑可使用 URL Mask。Base64 只支持同步编辑，建议通过 `--image-base64-file ./image.txt` 读取，避免把长内容写进命令历史。同步编辑会把 `--n` 写入 JSON 或 multipart 请求；`gpt-image-2-count` 只允许 `--n 1`。
 
 ## 异步任务
 
@@ -181,13 +181,13 @@ python3 skills/supertoken-gpt-image-2/scripts/supertoken_image.py wait task_exam
   --output ./skyline.png
 ```
 
-任务状态为 `queued` 或 `in_progress` 时继续等待，`succeeded` 时保存 `result.images[]` 中的全部图片，`failed` 时停止并输出脱敏错误。默认最长等待 900 秒。
+任务状态为 `queued` 或 `in_progress` 时继续等待，`succeeded` 时保存 `result.images[]` 中的全部图片，`failed` 时停止并输出脱敏错误。`task` 只输出任务 ID、状态、可选进度和经过脱敏的失败摘要，不回显结果 URL、Base64 或服务端附加字段。默认最长等待 900 秒；任务查询、轮询休眠和结果下载共用同一个截止时间。
 
 ## 结果、重试与旧版基址
 
-成功 JSON 会包含模型、存在时的任务 ID，以及 `outputs[]` 中每张图片的绝对路径、字节数和格式。多图结果按 `name-1.ext`、`name-2.ext` 命名。文件先写入 `.part`，校验完成后再替换目标文件。
+成功 JSON 只包含当前命令约定的字段。保存结果时最多接受 10 张图片、合计 256 MiB；多图按 `name-1.ext`、`name-2.ext` 命名。文件先写入同目录下唯一的临时文件，全部校验通过后再替换目标项；中途失败会清理本次生成的输出。
 
-同步生成、同步编辑和异步创建的 POST 不自动重试。手动重试同一个异步请求时，复用原来的 `Idempotency-Key`；不同请求使用新键。任务查询 GET 只对连接错误、`429`、`502` 和 `503` 做有限重试。
+同步生成、同步编辑和异步创建的 POST 不自动重试。手动重试同一个异步请求时，复用原来的 `Idempotency-Key`；不同请求使用新键。显式幂等键必须由 1 到 128 个 ASCII 可见非空白字符组成。任务查询 GET 只对连接错误、`429`、`502` 和 `503` 做有限重试。
 
 默认基址是 `https://api.supertoken.cc`。如需明确调用旧版同步接口，可在 `generate` 或 `edit` 中单次传入：
 
@@ -195,7 +195,7 @@ python3 skills/supertoken-gpt-image-2/scripts/supertoken_image.py wait task_exam
 --base-url https://api.supertoken.cc/image-wrapper/v1
 ```
 
-旧版 `image-wrapper/v1` 基址只支持同步生成和编辑，不支持 `models` 或异步命令。端点、字段与上传限制见 [GPT Image 2 API 参考](skills/supertoken-gpt-image-2/references/gpt-image-2-api.md)。
+旧版 `image-wrapper/v1` 基址只支持同步生成和编辑，不支持 `models` 或异步命令。自定义基址必须是干净的绝对 HTTPS 地址，不能包含用户信息、查询参数或片段；认证请求不会跟随重定向。端点、字段与限制见 [GPT Image 2 API 参考](skills/supertoken-gpt-image-2/references/gpt-image-2-api.md)。
 
 ## 支持
 
@@ -345,7 +345,7 @@ python3 skills/supertoken-gpt-image-2/scripts/supertoken_image.py edit \
   --output ./sketch.png
 ```
 
-One `edit` invocation must use exactly one input family: local files, URLs, or Base64. Do not mix them. A local Mask requires local images; an async URL edit may use a URL Mask. Base64 is synchronous-only. Prefer `--image-base64-file ./image.txt` so long data does not enter shell history.
+One `edit` invocation must use exactly one input family: local files, URLs, or Base64. Do not mix them. A local Mask requires local images; an async URL edit may use a URL Mask. Base64 is synchronous-only. Prefer `--image-base64-file ./image.txt` so long data does not enter shell history. Sync edits send `--n` in JSON and multipart requests; `gpt-image-2-count` accepts only `--n 1`.
 
 ### Run asynchronous tasks
 
@@ -383,13 +383,13 @@ python3 skills/supertoken-gpt-image-2/scripts/supertoken_image.py wait task_exam
   --output ./skyline.png
 ```
 
-Polling continues for `queued` and `in_progress`, saves every `result.images[]` item on `succeeded`, and stops with a redacted error on `failed`. The default wait limit is 900 seconds.
+Polling continues for `queued` and `in_progress`, saves every `result.images[]` item on `succeeded`, and stops with a redacted error on `failed`. `task` prints only the task ID, status, optional progress, and a redacted failure summary; it never echoes result URLs, Base64, or arbitrary server fields. The default 900-second limit is one deadline shared by task queries, polling sleeps, and result downloads.
 
 ### Results, retries, and the legacy base
 
-Successful JSON includes the model, the task ID when present, and each image's absolute path, byte count, and format in `outputs[]`. Multiple results become `name-1.ext`, `name-2.ext`, and so on. Files are written through `.part` and promoted only after validation.
+Successful JSON contains only fields defined for that command. A save accepts at most 10 images and 256 MiB in aggregate. Multiple results become `name-1.ext`, `name-2.ext`, and so on. Unique temporary files are written in the destination directory and promoted only after every result passes validation; a later failure removes outputs created by that save.
 
-Sync generation, sync editing, and async creation POST requests are never retried automatically. Reuse the original `Idempotency-Key` when manually retrying the same async request. Use a new key for a different request. Task-query GET retries are bounded to connection errors, `429`, `502`, and `503`.
+Sync generation, sync editing, and async creation POST requests are never retried automatically. Reuse the original `Idempotency-Key` when manually retrying the same async request. Use a new key for a different request. Explicit keys must contain 1-128 ASCII visible non-whitespace characters. Task-query GET retries are bounded to connection errors, `429`, `502`, and `503`.
 
 The default base is `https://api.supertoken.cc`. To call the legacy sync API explicitly, add this one-command override to `generate` or `edit`:
 
@@ -397,7 +397,7 @@ The default base is `https://api.supertoken.cc`. To call the legacy sync API exp
 --base-url https://api.supertoken.cc/image-wrapper/v1
 ```
 
-The legacy `image-wrapper/v1` base supports only sync generation and editing, not `models` or async commands. See the [GPT Image 2 API reference](skills/supertoken-gpt-image-2/references/gpt-image-2-api.md) for endpoints, field mappings, and upload limits.
+The legacy `image-wrapper/v1` base supports only sync generation and editing, not `models` or async commands. A custom base must be a clean absolute HTTPS URL without userinfo, query, or fragment. Authenticated API requests do not follow redirects. See the [GPT Image 2 API reference](skills/supertoken-gpt-image-2/references/gpt-image-2-api.md) for endpoints, field mappings, and limits.
 
 ### Support
 

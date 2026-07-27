@@ -2,7 +2,10 @@
 import base64
 import binascii
 import json
+import os
 import re
+import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -36,6 +39,10 @@ class ApiResponseError(RuntimeError):
 MAX_IMAGES = 10
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_MULTIPART_BYTES = 100 * 1024 * 1024
+MAX_API_BODY_BYTES = 384 * 1024 * 1024
+MAX_ERROR_BODY_BYTES = 1 * 1024 * 1024
+MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
+MAX_OUTPUT_BYTES = 256 * 1024 * 1024
 FORMAT_SUFFIX = {"png": ".png", "jpeg": ".jpeg", "webp": ".webp"}
 
 
@@ -92,7 +99,9 @@ def download_image(url, timeout):
     with urllib.request.urlopen(request, timeout=timeout) as response:
         if urllib.parse.urlparse(response.geturl()).scheme != "https":
             raise ApiResponseError("图片下载重定向后的地址必须使用 HTTPS。")
-        return response.read()
+        return bounded_read(
+            response, MAX_DOWNLOAD_BYTES, "图片下载响应", response.headers
+        )
 
 
 def _item_bytes(item, timeout):
@@ -101,9 +110,12 @@ def _item_bytes(item, timeout):
         if not isinstance(encoded, (str, bytes, bytearray)) or not encoded:
             raise ApiResponseError("图片响应中的 Base64 无效。")
         try:
-            return base64.b64decode(encoded, validate=True), None
+            value = base64.b64decode(encoded, validate=True)
         except (binascii.Error, TypeError, UnicodeError, ValueError) as exc:
             raise ApiResponseError("图片响应中的 Base64 无效。") from exc
+        if len(value) > MAX_DOWNLOAD_BYTES:
+            raise ApiResponseError("单张图片结果超过 64 MiB 限制。")
+        return value, None
     url = item.get("url")
     if url is not None:
         if not isinstance(url, str) or not url:
@@ -117,45 +129,148 @@ def _final_output_path(
 ):
     requested = Path(requested).expanduser()
     if preserve_requested_path:
-        return requested.resolve()
+        return Path(os.path.abspath(requested))
     suffix = FORMAT_SUFFIX[image_format]
     stem = requested.stem
     if count > 1:
         stem = f"{stem}-{index + 1}"
-    return requested.with_name(stem + suffix).resolve()
+    return Path(os.path.abspath(requested.with_name(stem + suffix)))
 
 
-def save_image_items(items, output_path, timeout, preserve_requested_path=False):
+def _unique_temp_path(final, suffix):
+    descriptor, raw_path = tempfile.mkstemp(
+        prefix=f".{final.name}.", suffix=suffix, dir=final.parent
+    )
+    return descriptor, Path(raw_path)
+
+
+def _write_staged_file(final, data):
+    descriptor, part = _unique_temp_path(final, ".part")
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if part.stat().st_size == 0:
+            raise ApiResponseError("图片结果为空。")
+        return part
+    except Exception:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        part.unlink(missing_ok=True)
+        raise
+
+
+def _backup_destination(final):
+    for _attempt in range(100):
+        backup = final.parent / f".{final.name}.{uuid.uuid4().hex}.backup"
+        try:
+            if final.is_symlink():
+                os.symlink(
+                    os.readlink(final),
+                    backup,
+                    target_is_directory=final.is_dir(),
+                )
+            else:
+                os.link(final, backup)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise ApiResponseError("无法为现有图片输出创建安全备份。") from exc
+        return backup
+    raise ApiResponseError("无法为现有图片输出分配安全备份路径。")
+
+
+def validate_image_item_count(items, expected_count=None):
     if not isinstance(items, list) or not items:
         raise ApiResponseError("图片响应中没有有效的结果。")
-    saved = []
-    for index, item in enumerate(items):
-        if not isinstance(item, dict):
-            raise ApiResponseError("图片响应项不是对象。")
-        data, source_url = _item_bytes(item, timeout)
-        try:
-            image_format = detect_image_format(data)
-        except ApiUsageError as exc:
-            raise ApiResponseError("图片响应不是可识别的 PNG、JPEG 或 WebP。") from exc
-        final = _final_output_path(
-            output_path,
-            index,
-            len(items),
-            image_format,
-            preserve_requested_path,
+    if len(items) > MAX_IMAGES:
+        raise ApiResponseError("图片响应最多包含 10 个结果。")
+    if expected_count is not None and len(items) != expected_count:
+        raise ApiResponseError(
+            f"图片响应数量与请求不符：预期 {expected_count} 个结果。"
         )
-        final.parent.mkdir(parents=True, exist_ok=True)
-        part = Path(f"{final}.part")
-        part.unlink(missing_ok=True)
-        try:
-            part.write_bytes(data)
-            if part.stat().st_size == 0:
-                raise ApiResponseError("图片结果为空。")
-            part.replace(final)
-        finally:
+
+
+def save_image_items(
+    items,
+    output_path,
+    timeout,
+    preserve_requested_path=False,
+    expected_count=None,
+    deadline=None,
+    deadline_message=None,
+    monotonic=None,
+):
+    validate_image_item_count(items, expected_count)
+    monotonic = monotonic or time.monotonic
+    deadline_message = deadline_message or "图片结果下载超过等待时限。"
+    staged = []
+    backups = []
+    promoted = []
+    total = 0
+    try:
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise ApiResponseError("图片响应项不是对象。")
+            item_timeout = timeout
+            if deadline is not None:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise ApiResponseError(deadline_message)
+                item_timeout = min(timeout, remaining)
+            data, source_url = _item_bytes(item, item_timeout)
+            if deadline is not None and deadline - monotonic() <= 0:
+                raise ApiResponseError(deadline_message)
+            total += len(data)
+            if total > MAX_OUTPUT_BYTES:
+                raise ApiResponseError("图片结果总大小超过 256 MiB 限制。")
+            try:
+                image_format = detect_image_format(data)
+            except ApiUsageError as exc:
+                raise ApiResponseError(
+                    "图片响应不是可识别的 PNG、JPEG 或 WebP。"
+                ) from exc
+            final = _final_output_path(
+                output_path,
+                index,
+                len(items),
+                image_format,
+                preserve_requested_path,
+            )
+            final.parent.mkdir(parents=True, exist_ok=True)
+            if not final.is_symlink() and final.is_dir():
+                raise ApiResponseError("图片输出路径不能是目录。")
+            part = _write_staged_file(final, data)
+            staged.append((part, final, data, image_format, source_url))
+
+        for part, final, data, image_format, source_url in staged:
+            backup = None
+            if os.path.lexists(final):
+                backup = _backup_destination(final)
+            backups.append((final, backup))
+            os.replace(part, final)
+            promoted.append(final)
+        return [
+            SavedImage(final, len(data), image_format, source_url)
+            for _part, final, data, image_format, source_url in staged
+        ]
+    except Exception:
+        for final, backup in reversed(backups):
+            if backup is not None and os.path.lexists(backup):
+                os.replace(backup, final)
+            elif final in promoted:
+                final.unlink(missing_ok=True)
+        raise
+    finally:
+        for part, *_rest in staged:
             part.unlink(missing_ok=True)
-        saved.append(SavedImage(final, len(data), image_format, source_url))
-    return saved
+        for _final, backup in backups:
+            if backup is not None:
+                if os.path.lexists(backup):
+                    backup.unlink()
 
 
 def endpoint_url(base_url, route):
@@ -204,53 +319,207 @@ def encode_multipart(fields, files, boundary=None):
     return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_AUTHENTICATED_OPENER = urllib.request.build_opener(_NoRedirectHandler())
+
+
+def _open_url(request, timeout):
+    return _AUTHENTICATED_OPENER.open(request, timeout=timeout)
+
+
+def _content_length(headers):
+    value = header_value(headers or {}, "Content-Length")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def bounded_read(stream, limit, label, headers=None):
+    length = _content_length(headers)
+    if length is not None and length > limit:
+        raise ApiResponseError(f"{label}超过大小限制。")
+    chunks = []
+    total = 0
+    while True:
+        requested = min(64 * 1024, limit - total + 1)
+        try:
+            chunk = stream.read(requested)
+        except TypeError as exc:
+            raise ApiResponseError(f"{label}无法按限制读取。") from exc
+        if not isinstance(chunk, (bytes, bytearray)):
+            raise ApiResponseError(f"{label}读取结果无效。")
+        if len(chunk) > requested or total + len(chunk) > limit:
+            raise ApiResponseError(f"{label}超过大小限制。")
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(bytes(chunk))
+        total += len(chunk)
+
+
 def _open(request, timeout):
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return ApiResponse(response.status, dict(response.headers), response.read())
+        with _open_url(request, timeout) as response:
+            headers = dict(response.headers)
+            limit = (
+                MAX_API_BODY_BYTES
+                if 200 <= response.status < 300 else MAX_ERROR_BODY_BYTES
+            )
+            body = bounded_read(response, limit, "SuperToken 响应", headers)
+            return ApiResponse(response.status, headers, body)
     except urllib.error.HTTPError as exc:
         try:
-            return ApiResponse(exc.code, dict(exc.headers or {}), exc.read())
+            headers = dict(exc.headers or {})
+            body = bounded_read(exc, MAX_ERROR_BODY_BYTES, "SuperToken 错误响应", headers)
+            return ApiResponse(exc.code, headers, body)
         finally:
             exc.close()
 
 
+def _validate_authenticated_url(url):
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+    except (TypeError, ValueError) as exc:
+        raise ApiUsageError("认证 API 请求必须使用有效的绝对 HTTPS 地址。") from exc
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.netloc
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or port == 0
+    ):
+        raise ApiUsageError("认证 API 请求必须使用有效的绝对 HTTPS 地址。")
+
+
 def request_json(method, url, api_key, timeout, payload=None, headers=None):
+    _validate_authenticated_url(url)
     body = None if payload is None else json.dumps(
         payload, ensure_ascii=False
     ).encode("utf-8")
-    request_headers = {"Authorization": f"Bearer {api_key}"}
+    request_headers = {}
     if body is not None:
         request_headers["Content-Type"] = "application/json"
-    request_headers.update(headers or {})
     request = urllib.request.Request(
         url, data=body, headers=request_headers, method=method
     )
+    request.add_unredirected_header("Authorization", f"Bearer {api_key}")
+    for name, value in (headers or {}).items():
+        if name.lower() in {"authorization", "idempotency-key"}:
+            request.add_unredirected_header(name, value)
+        else:
+            request.add_header(name, value)
     return _open(request, timeout)
 
 
 def request_multipart(method, url, api_key, timeout, fields, files, headers=None):
+    _validate_authenticated_url(url)
     body, content_type = encode_multipart(fields, files)
-    request_headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": content_type,
-    }
-    request_headers.update(headers or {})
+    request_headers = {"Content-Type": content_type}
     request = urllib.request.Request(
         url, data=body, headers=request_headers, method=method
     )
+    request.add_unredirected_header("Authorization", f"Bearer {api_key}")
+    for name, value in (headers or {}).items():
+        if name.lower() in {"authorization", "idempotency-key"}:
+            request.add_unredirected_header(name, value)
+        else:
+            request.add_header(name, value)
     return _open(request, timeout)
 
 
 KEY_PATTERN = re.compile(r"(?:sk-|ak_|wk-)[A-Za-z0-9_-]{8,}")
+URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+IMAGE_BASE64_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9+/=])(?:iVBORw0KGg|/9j/|UklGR)[A-Za-z0-9+/=]{16,}"
+)
+
+
+def sanitize_url(value, *secrets):
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return "[REDACTED URL]"
+    if parsed.scheme and host:
+        display_host = host.lower()
+        if ":" in display_host:
+            display_host = f"[{display_host}]"
+        if port is not None:
+            display_host = f"{display_host}:{port}"
+        return urllib.parse.urlunsplit((
+            parsed.scheme.lower(),
+            display_host,
+            _sanitize_text(parsed.path, secrets),
+            "",
+            "",
+        ))
+    return _sanitize_text(parsed.path, secrets) or "[REDACTED URL]"
+
+
+def _sanitize_text(text, secrets):
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    text = KEY_PATTERN.sub("[REDACTED]", text)
+    text = URL_PATTERN.sub(
+        lambda match: sanitize_url(match.group(0), *secrets), text
+    )
+    return IMAGE_BASE64_PATTERN.sub("[REDACTED IMAGE DATA]", text)
+
+
+def sanitize_server_text(value, *secrets):
+    if not isinstance(value, str):
+        return "[REDACTED]"
+    return _sanitize_text(value, secrets)
+
+
+def _sanitize_json(value, secrets, key=None):
+    if isinstance(key, str) and key.lower() == "b64_json":
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {
+            sanitize_server_text(str(item_key), *secrets): _sanitize_json(
+                item_value, secrets, str(item_key)
+            )
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_json(item, secrets) for item in value]
+    if isinstance(value, str):
+        return _sanitize_text(value, secrets)
+    return value
 
 
 def sanitize_diagnostic(body, *secrets):
     text = body.decode("utf-8", errors="replace")
-    for secret in secrets:
-        if secret:
-            text = text.replace(secret, "[REDACTED]")
-    return KEY_PATTERN.sub("[REDACTED]", text)[:1000]
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return _sanitize_text(text, secrets)[:1000]
+    return json.dumps(
+        _sanitize_json(value, secrets), ensure_ascii=False
+    )[:1000]
+
+
+def sanitize_request_id(value):
+    if not isinstance(value, str) or not value or len(value) > 128:
+        return "[REDACTED]"
+    sanitized = _sanitize_text(value, ())
+    if sanitized != value or any(ord(char) < 33 or ord(char) > 126 for char in value):
+        return "[REDACTED]"
+    return value
 
 
 def parse_json_response(response, secrets=()):
@@ -304,6 +573,8 @@ def classify_http_error(status, headers, key_kind, model=None):
         return "请求频率或账户额度受限。"
     if 500 <= status <= 599:
         identifier = request_id(headers)
+        if identifier:
+            identifier = sanitize_request_id(identifier)
         suffix = f" 请求 ID：{identifier}。" if identifier else ""
         return f"SuperToken 图片服务暂时不可用（HTTP {status}）。{suffix}".strip()
     return f"SuperToken 图片请求失败（HTTP {status}）。"

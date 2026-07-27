@@ -4,6 +4,7 @@ import base64
 import binascii
 import getpass
 import json
+import math
 import re
 import sys
 import time
@@ -28,6 +29,7 @@ from supertoken_config import (
     save_api_key,
     save_config,
     validate_api_key,
+    normalize_api_base,
 )
 
 
@@ -96,6 +98,9 @@ def parse_args(argv=None):
 
 
 def validate_mode_args(args):
+    wait_timeout = getattr(args, "wait_timeout", None)
+    if wait_timeout is not None and wait_timeout <= 0:
+        raise api.ApiUsageError("--wait-timeout 必须大于 0。")
     if args.command not in {"generate", "edit"}:
         return
     if args.wait and not args.async_mode:
@@ -147,8 +152,13 @@ def validate_mode_args(args):
             )
     elif args.wait_timeout is None:
         args.wait_timeout = 900
-    if args.idempotency_key is not None and len(args.idempotency_key) > 128:
-        raise api.ApiUsageError("--idempotency-key 最多 128 个字符。")
+    if (
+        args.idempotency_key is not None
+        and not re.fullmatch(r"[!-~]{1,128}", args.idempotency_key)
+    ):
+        raise api.ApiUsageError(
+            "Idempotency-Key 必须包含 1 到 128 个 ASCII 可见非空白字符。"
+        )
     if (
         args.client_reference_id is not None
         and len(args.client_reference_id) > 191
@@ -175,9 +185,15 @@ def parse_value(value):
 
 def merge_extra_params(payload, args):
     if args.json_params:
-        extra = json.loads(Path(args.json_params).expanduser().read_text(encoding="utf-8"))
+        path = Path(args.json_params).expanduser()
+        try:
+            extra = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise api.ApiUsageError(
+                f"无法读取或解析 --json-params 文件：{path}。"
+            ) from exc
         if not isinstance(extra, dict):
-            raise ValueError("--json-params 必须包含 JSON 对象。")
+            raise api.ApiUsageError("--json-params 必须包含 JSON 对象。")
         payload.update(extra)
 
     for item in args.param:
@@ -307,7 +323,12 @@ def classify_edit_inputs(image_values, base64_files, mask_value, async_mode):
                 mask = api.validate_local_images([mask_path])[0]
             else:
                 raise api.ApiUsageError("同步 Mask 必须是本地文件；异步 URL 编辑可使用 URL Mask。")
-        elif async_mode and kind == "url" and parsed_mask.scheme in {"http", "https"}:
+        elif (
+            async_mode
+            and kind == "url"
+            and parsed_mask.scheme in {"http", "https"}
+            and parsed_mask.netloc
+        ):
             mask = mask_value
         else:
             raise api.ApiUsageError("同步 Mask 必须是本地文件；异步 URL 编辑可使用 URL Mask。")
@@ -327,6 +348,7 @@ def build_edit_payload(args):
     payload = {
         "model": args.model or DEFAULT_MODEL,
         "prompt": args.prompt,
+        "n": args.count,
         "size": args.size,
         "quality": args.quality,
     }
@@ -367,7 +389,7 @@ def write_raw_diagnostic(path, body, *secrets):
 
 
 def require_success(response, key_kind, model, *secrets):
-    if response.status >= 400:
+    if not 200 <= response.status < 300:
         detail = api.sanitize_diagnostic(response.body, *secrets)
         message = api.classify_http_error(response.status, response.headers, key_kind, model)
         raise api.ApiResponseError(f"{message}\n{detail}")
@@ -387,7 +409,9 @@ def output_rows(saved):
 
 def resolve_runtime(args, key_kind=MODEL_KEY):
     current = load_config()
-    base_url = (args.base_url or current.get("base_url") or DEFAULT_BASE_URL).rstrip("/")
+    base_url = normalize_api_base(
+        args.base_url or current.get("base_url") or DEFAULT_BASE_URL
+    )
     explicit_key = (
         getattr(args, "api_key", None) if key_kind == MODEL_KEY
         else getattr(args, "resource_api_key", None)
@@ -431,12 +455,18 @@ def run_models(args, base_url, api_key):
         "GET", api.endpoint_url(base_url, "/v1/models"), api_key, args.timeout
     )
     data = require_success(response, MODEL_KEY, None, api_key)
-    model_ids = [
-        item["id"] for item in data.get("data", [])
-        if isinstance(item, dict) and isinstance(item.get("id"), str)
-    ]
+    items = data.get("data")
+    if not isinstance(items, list) or any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("id"), str)
+        or not item["id"]
+        for item in items
+    ):
+        raise api.ApiResponseError("SuperToken 返回的模型列表格式无效。")
+    model_ids = [item["id"] for item in items]
     if not args.all:
         model_ids = [value for value in model_ids if "gpt-image-2" in value]
+    model_ids = [api.sanitize_server_text(value, api_key) for value in model_ids]
     print(json.dumps({"models": model_ids}, ensure_ascii=False, indent=2))
 
 
@@ -453,26 +483,29 @@ def run_sync_generate(args, base_url, api_key, legacy_output=False):
     data = require_success(response, MODEL_KEY, payload["model"], api_key)
     items = data.get("data")
     if legacy_output:
-        if not isinstance(items, list) or not items:
-            raise api.ApiResponseError("图片响应中没有有效的结果。")
+        api.validate_image_item_count(items, payload["n"])
         saved = api.save_image_items(
             items[:1],
             Path(args.output),
             args.timeout,
             preserve_requested_path=True,
+            expected_count=1,
         )
+        content_type = api.header_value(response.headers, "Content-Type")
+        if content_type is not None:
+            content_type = api.sanitize_server_text(content_type, api_key)
         print(json.dumps({
             "status": response.status,
             "base_url": base_url,
             "model": payload["model"],
             "output": str(Path(args.output).expanduser()),
             "bytes": saved[0].bytes_written,
-            "content_type": api.header_value(
-                response.headers, "Content-Type"
-            ),
+            "content_type": content_type,
         }, ensure_ascii=False, indent=2))
         return
-    saved = api.save_image_items(items, Path(args.output), args.timeout)
+    saved = api.save_image_items(
+        items, Path(args.output), args.timeout, expected_count=payload["n"]
+    )
     print(json.dumps({
         "mode": "sync",
         "operation": "generation",
@@ -483,6 +516,8 @@ def run_sync_generate(args, base_url, api_key, legacy_output=False):
 
 def run_sync_edit(args, base_url, api_key, inputs):
     payload = build_edit_payload(args)
+    if payload["model"] == "gpt-image-2-count" and payload["n"] != 1:
+        raise api.ApiUsageError("gpt-image-2-count 的 --n 只能为 1。")
     endpoint = api.endpoint_url(base_url, "/v1/images/edits")
     if inputs.kind == "local":
         files = [
@@ -507,7 +542,10 @@ def run_sync_edit(args, base_url, api_key, inputs):
     if args.raw_json:
         write_raw_diagnostic(Path(args.raw_json), response.body, api_key)
     data = require_success(response, MODEL_KEY, payload["model"], api_key)
-    saved = api.save_image_items(data.get("data"), Path(args.output), args.timeout)
+    saved = api.save_image_items(
+        data.get("data"), Path(args.output), args.timeout,
+        expected_count=payload["n"],
+    )
     print(json.dumps({
         "mode": "sync",
         "operation": "edit",
@@ -519,24 +557,98 @@ def run_sync_edit(args, base_url, api_key, inputs):
 class TaskFailed(api.ApiResponseError):
     def __init__(self, task_id, task, secrets=()):
         self.task = task
-        error = task.get("error")
-        if error is not None and not isinstance(error, dict):
-            super().__init__(f"异步任务 {task_id} 返回的 error 不是对象。")
+        try:
+            error = task_error_summary(task, f"异步任务 {task_id}", secrets)
+        except api.ApiResponseError as exc:
+            super().__init__(str(exc))
             return
-        error = error or {}
-        safe_code = api.sanitize_diagnostic(
-            str(error.get("code", "unknown")).encode("utf-8"), *secrets
-        )
-        safe_message = api.sanitize_diagnostic(
-            str(error.get("message", "未知错误")).encode("utf-8"), *secrets
-        )
-        safe_retryable = api.sanitize_diagnostic(
-            str(error.get("retryable", False)).encode("utf-8"), *secrets
-        )
         super().__init__(
-            f"异步任务 {task_id} 失败：{safe_code} - {safe_message}；"
-            f"retryable={safe_retryable}"
+            f"异步任务 {task_id} 失败：{error['code']} - {error['message']}；"
+            f"retryable={error['retryable']}"
         )
+
+
+TASK_STATUSES = {"queued", "in_progress", "succeeded", "failed"}
+TASK_ERROR_FIELDS = {"code", "message", "retryable"}
+
+
+def valid_task_id(value, secrets=()):
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"task_[A-Za-z0-9_-]+", value) is not None
+        and api.sanitize_server_text(value, *secrets) == value
+    )
+
+
+def task_error_summary(task, context, secrets=()):
+    error = task.get("error")
+    if (
+        not isinstance(error, dict)
+        or set(error) != TASK_ERROR_FIELDS
+        or not isinstance(error.get("code"), str)
+        or not isinstance(error.get("message"), str)
+        or not isinstance(error.get("retryable"), bool)
+    ):
+        raise api.ApiResponseError(f"{context} 返回的 error 格式无效。")
+    return {
+        "code": api.sanitize_diagnostic(error["code"].encode("utf-8"), *secrets),
+        "message": api.sanitize_diagnostic(
+            error["message"].encode("utf-8"), *secrets
+        ),
+        "retryable": error["retryable"],
+    }
+
+
+def validate_task_response(task, context, expected_id=None, secrets=()):
+    task_id = task.get("id")
+    if (
+        not valid_task_id(task_id, secrets)
+        or (expected_id is not None and task_id != expected_id)
+    ):
+        if expected_id is not None:
+            raise api.ApiResponseError(f"任务 {expected_id} 的响应身份无效。")
+        raise api.ApiResponseError(f"{context}中的任务 ID 无效。")
+    status = task.get("status")
+    if status not in TASK_STATUSES:
+        raise api.ApiResponseError(f"{context}中的任务状态无效。")
+    if "progress" in task:
+        progress = task["progress"]
+        if (
+            isinstance(progress, bool)
+            or not isinstance(progress, (int, float))
+            or not math.isfinite(progress)
+            or not 0 <= progress <= 100
+        ):
+            raise api.ApiResponseError(f"{context}中的任务进度无效。")
+    if status == "failed" or "error" in task:
+        task_error_summary(task, context, secrets)
+    if "result" in task and not isinstance(task["result"], dict):
+        raise api.ApiResponseError(f"{context}中的 result 格式无效。")
+    return task
+
+
+def task_summary(task_id, task, secrets=()):
+    summary = {"task_id": task_id, "status": task["status"]}
+    if "progress" in task:
+        summary["progress"] = task["progress"]
+    if task["status"] == "failed":
+        summary["error"] = task_error_summary(
+            task, f"异步任务 {task_id}", secrets
+        )
+    return summary
+
+
+def numeric_retry_after(headers):
+    raw = api.header_value(headers, "Retry-After")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value < 0:
+        return None
+    return int(value) if value.is_integer() else value
 
 
 def retry_delay(value, fallback=2):
@@ -558,7 +670,7 @@ def terminal_task_error(task_id, exc, resource_key):
 
 
 def query_task(base_url, resource_key, task_id, timeout):
-    if not re.fullmatch(r"task_[A-Za-z0-9_-]+", task_id):
+    if not valid_task_id(task_id, (resource_key,)):
         raise api.ApiUsageError("任务 ID 格式无效。")
     response = api.request_json(
         "GET",
@@ -566,7 +678,7 @@ def query_task(base_url, resource_key, task_id, timeout):
         resource_key,
         timeout,
     )
-    if response.status >= 400:
+    if not 200 <= response.status < 300:
         message = api.classify_http_error(
             response.status, response.headers, RESOURCE_KEY
         )
@@ -575,7 +687,14 @@ def query_task(base_url, resource_key, task_id, timeout):
         error.status = response.status
         error.headers = response.headers
         raise error
-    return api.parse_json_response(response, (resource_key,)), response.headers
+    task = api.parse_json_response(response, (resource_key,))
+    validate_task_response(
+        task,
+        f"任务 {task_id} 的响应",
+        expected_id=task_id,
+        secrets=(resource_key,),
+    )
+    return task, response.headers
 
 
 def poll_task(
@@ -587,19 +706,32 @@ def poll_task(
     initial_retry_after=2,
     sleep=time.sleep,
     monotonic=time.monotonic,
+    *,
+    deadline=None,
 ):
-    started = monotonic()
+    if wait_timeout <= 0:
+        raise api.ApiUsageError("--wait-timeout 必须大于 0。")
+    if deadline is None:
+        deadline = monotonic() + wait_timeout
     interval = retry_delay(initial_retry_after)
     consecutive_failures = 0
-    while monotonic() - started < wait_timeout:
+    while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            break
         try:
-            task, headers = query_task(base_url, resource_key, task_id, timeout)
+            task, headers = query_task(
+                base_url, resource_key, task_id, min(timeout, remaining)
+            )
             consecutive_failures = 0
         except urllib.error.URLError as exc:
             consecutive_failures += 1
             if consecutive_failures > 3:
                 raise terminal_task_error(task_id, exc, resource_key) from exc
-            sleep(interval)
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                break
+            sleep(min(interval, remaining))
             continue
         except api.ApiResponseError as exc:
             if getattr(exc, "status", None) not in {429, 502, 503}:
@@ -610,7 +742,10 @@ def poll_task(
             retry_after = api.header_value(
                 getattr(exc, "headers", {}), "Retry-After", interval
             )
-            sleep(retry_delay(retry_after, interval))
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                break
+            sleep(min(retry_delay(retry_after, interval), remaining))
             continue
         status = task.get("status")
         if status == "succeeded":
@@ -627,7 +762,10 @@ def poll_task(
         interval = retry_delay(
             api.header_value(headers, "Retry-After", interval), interval
         )
-        sleep(interval)
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            break
+        sleep(min(interval, remaining))
     raise api.ApiResponseError(f"等待任务 {task_id} 超过 {wait_timeout} 秒。")
 
 
@@ -661,7 +799,7 @@ def _multipart_async_edit(args, inputs):
     return fields, files
 
 
-def create_async_task(args, base_url, api_key, inputs=None):
+def create_async_task(args, base_url, api_key, inputs=None, output_secrets=()):
     idempotency_key = (
         uuid.uuid4().hex
         if args.idempotency_key is None else args.idempotency_key
@@ -687,60 +825,87 @@ def create_async_task(args, base_url, api_key, inputs=None):
                 "POST", endpoint, api_key, args.timeout, payload, headers=headers,
             )
         task = require_success(response, MODEL_KEY, model, api_key)
-        task_id = task.get("id")
-        if not isinstance(task_id, str) or not re.fullmatch(
-            r"task_[A-Za-z0-9_-]+", task_id
-        ):
-            raise api.ApiResponseError("异步创建响应中的任务 ID 无效。")
+        validate_task_response(
+            task, "异步创建响应", secrets=(api_key, *output_secrets)
+        )
         return task, response.headers, idempotency_key
     except (urllib.error.URLError, api.ApiResponseError, OSError):
-        print(f"Idempotency-Key：{idempotency_key}", file=sys.stderr)
+        safe_key = api.sanitize_server_text(
+            idempotency_key, api_key, *output_secrets
+        )
+        print(f"Idempotency-Key：{safe_key}", file=sys.stderr)
         raise
 
 
-def _async_result(task_id, task, output, timeout, operation=None, model=None):
+def _async_result(
+    task_id, task, output, timeout, operation=None, model=None,
+    expected_count=None, deadline=None, wait_timeout=None,
+    monotonic=None,
+):
     result = task.get("result")
     if not isinstance(result, dict):
         raise api.ApiResponseError(
             f"异步任务 {task_id} 返回的 result 不是对象。"
         )
     try:
-        saved = api.save_image_items(result.get("images"), Path(output), timeout)
+        saved = api.save_image_items(
+            result.get("images"), Path(output), timeout,
+            expected_count=expected_count,
+            deadline=deadline,
+            deadline_message=(
+                f"等待任务 {task_id} 超过 {wait_timeout} 秒。"
+                if wait_timeout is not None else None
+            ),
+            monotonic=monotonic,
+        )
     except api.ApiResponseError as exc:
         raise api.ApiResponseError(
             f"异步任务 {task_id} 的结果无效：{exc}"
         ) from exc
-    return {
-        "mode": "async",
-        "operation": task.get("operation", operation),
-        "model": task.get("model", model),
+    value = {
         "task_id": task_id,
         "status": task.get("status"),
-        "progress": task.get("progress"),
         "outputs": output_rows(saved),
     }
+    if "progress" in task:
+        value["progress"] = task["progress"]
+    if operation is not None and model is not None:
+        value.update({
+            "mode": "async", "operation": operation, "model": model,
+        })
+    return value
 
 
 def run_async_create(args, base_url, api_key, inputs=None, wait_runtime=None):
+    output_secrets = (() if wait_runtime is None else (wait_runtime[1],))
     task, headers, idempotency_key = create_async_task(
-        args, base_url, api_key, inputs
+        args, base_url, api_key, inputs, output_secrets
     )
     operation = "generation" if inputs is None else "edit"
     model = args.model or DEFAULT_MODEL
     if not args.wait:
-        print(json.dumps({
+        value = {
             "mode": "async",
             "operation": operation,
             "model": model,
             "task_id": task.get("id"),
             "status": task.get("status"),
-            "progress": task.get("progress"),
-            "idempotency_key": idempotency_key,
-            "location": api.header_value(headers, "Location"),
-            "retry_after": api.header_value(headers, "Retry-After"),
-        }, ensure_ascii=False, indent=2))
+            "idempotency_key": api.sanitize_server_text(
+                idempotency_key, api_key, *output_secrets
+            ),
+        }
+        if "progress" in task:
+            value["progress"] = task["progress"]
+        location = api.header_value(headers, "Location")
+        if location is not None:
+            value["location"] = api.sanitize_url(location, api_key)
+        retry_after = numeric_retry_after(headers)
+        if retry_after is not None:
+            value["retry_after"] = retry_after
+        print(json.dumps(value, ensure_ascii=False, indent=2))
         return
     resource_base_url, resource_key = wait_runtime
+    deadline = time.monotonic() + args.wait_timeout
     completed = poll_task(
         resource_base_url,
         resource_key,
@@ -748,11 +913,18 @@ def run_async_create(args, base_url, api_key, inputs=None, wait_runtime=None):
         args.timeout,
         args.wait_timeout,
         api.header_value(headers, "Retry-After", 2),
+        deadline=deadline,
     )
     result = _async_result(
-        task["id"], completed, args.output, args.timeout, operation, model
+        task["id"], completed, args.output, args.timeout, operation, model,
+        expected_count=args.count,
+        deadline=deadline,
+        wait_timeout=args.wait_timeout,
+        monotonic=time.monotonic,
     )
-    result["idempotency_key"] = idempotency_key
+    result["idempotency_key"] = api.sanitize_server_text(
+        idempotency_key, api_key, resource_key
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
@@ -763,19 +935,33 @@ def run_task_command(args, base_url, resource_key):
         )
     except (urllib.error.URLError, api.ApiResponseError) as exc:
         raise terminal_task_error(args.task_id, exc, resource_key) from exc
-    print(json.dumps(task, ensure_ascii=False, indent=2))
+    print(json.dumps(
+        task_summary(args.task_id, task, (resource_key,)),
+        ensure_ascii=False,
+        indent=2,
+    ))
 
 
 def run_wait_command(args, base_url, resource_key):
+    deadline = time.monotonic() + args.wait_timeout
     task = poll_task(
         base_url,
         resource_key,
         args.task_id,
         args.timeout,
         args.wait_timeout,
+        deadline=deadline,
     )
     print(json.dumps(
-        _async_result(args.task_id, task, args.output, args.timeout),
+        _async_result(
+            args.task_id,
+            task,
+            args.output,
+            args.timeout,
+            deadline=deadline,
+            wait_timeout=args.wait_timeout,
+            monotonic=time.monotonic,
+        ),
         ensure_ascii=False,
         indent=2,
     ))
@@ -783,10 +969,12 @@ def run_wait_command(args, base_url, resource_key):
 
 def main(argv=None, legacy_output=False):
     args = parse_args(argv)
+    active_secrets = []
     try:
         validate_mode_args(args)
         if args.command == "models":
             _current, base_url, api_key = resolve_runtime(args)
+            active_secrets.append(api_key)
             run_models(args, base_url, api_key)
         elif args.command == "generate":
             if args.async_mode:
@@ -795,11 +983,14 @@ def main(argv=None, legacy_output=False):
                     _current, resource_base_url, resource_key = resolve_runtime(
                         args, RESOURCE_KEY
                     )
+                    active_secrets.append(resource_key)
                     wait_runtime = (resource_base_url, resource_key)
                 _current, base_url, api_key = resolve_runtime(args)
+                active_secrets.append(api_key)
                 run_async_create(args, base_url, api_key, wait_runtime=wait_runtime)
                 return 0
             _current, base_url, api_key = resolve_runtime(args)
+            active_secrets.append(api_key)
             run_sync_generate(args, base_url, api_key, legacy_output)
         elif args.command == "edit":
             inputs = classify_edit_inputs(
@@ -811,25 +1002,35 @@ def main(argv=None, legacy_output=False):
                     _current, resource_base_url, resource_key = resolve_runtime(
                         args, RESOURCE_KEY
                     )
+                    active_secrets.append(resource_key)
                     wait_runtime = (resource_base_url, resource_key)
                 _current, base_url, api_key = resolve_runtime(args)
+                active_secrets.append(api_key)
                 run_async_create(
                     args, base_url, api_key, inputs, wait_runtime=wait_runtime
                 )
                 return 0
             _current, base_url, api_key = resolve_runtime(args)
+            active_secrets.append(api_key)
             run_sync_edit(args, base_url, api_key, inputs)
         elif args.command == "task":
             _current, base_url, resource_key = resolve_runtime(args, RESOURCE_KEY)
+            active_secrets.append(resource_key)
             run_task_command(args, base_url, resource_key)
         elif args.command == "wait":
             _current, base_url, resource_key = resolve_runtime(args, RESOURCE_KEY)
+            active_secrets.append(resource_key)
             run_wait_command(args, base_url, resource_key)
     except (ConfigError, api.ApiUsageError, ValueError, json.JSONDecodeError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     except (urllib.error.URLError, api.ApiResponseError, binascii.Error, OSError) as exc:
-        print(str(exc), file=sys.stderr)
+        print(
+            api.sanitize_diagnostic(
+                str(exc).encode("utf-8", errors="replace"), *active_secrets
+            ),
+            file=sys.stderr,
+        )
         return 1
     return 0
 
