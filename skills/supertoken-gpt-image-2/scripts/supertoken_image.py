@@ -199,13 +199,16 @@ def resolve_runtime(args, key_kind=MODEL_KEY):
     if not key:
         env_name = API_KEY_ENV if key_kind == MODEL_KEY else RESOURCE_API_KEY_ENV
         raise ConfigError(f"没有找到 Key。请设置 {env_name} 或运行 setup.py。")
-    if not current:
+    if not current or args.base_url:
         persistent_base = (
             DEFAULT_BASE_URL
             if base_url.endswith("/image-wrapper/v1")
             else base_url
         )
-        save_config(build_config(base_url=persistent_base))
+        save_config(build_config(
+            base_url=persistent_base,
+            model=current.get("model", DEFAULT_MODEL),
+        ))
     return current, base_url, key
 
 

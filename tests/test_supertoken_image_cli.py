@@ -75,6 +75,30 @@ class ParserTests(unittest.TestCase):
 
 
 class ModelListingTests(unittest.TestCase):
+    def test_explicit_base_url_refreshes_existing_config_without_losing_model(self):
+        current = config.build_config(
+            base_url="https://old-proxy.example/v1", model="custom-image-model",
+        )
+        refreshed = config.build_config(
+            base_url="https://new-proxy.example/v1", model="custom-image-model",
+        )
+        with tempfile.TemporaryDirectory() as config_dir:
+            with patch.dict(os.environ, {
+                config.CONFIG_DIR_ENV: config_dir,
+                config.API_KEY_ENV: "test-key",
+            }, clear=False):
+                config.save_config(current)
+                args = cli.parse_args([
+                    "models", "--base-url", "https://new-proxy.example/v1/",
+                ])
+                with patch.object(cli, "save_config", wraps=config.save_config) as save_config:
+                    _current, base_url, key = cli.resolve_runtime(args)
+
+                self.assertEqual(base_url, "https://new-proxy.example/v1")
+                self.assertEqual(key, "test-key")
+                save_config.assert_called_once_with(refreshed)
+                self.assertEqual(config.load_config(), refreshed)
+
     def test_models_filters_to_gpt_image_2_unless_all_is_requested(self):
         response = api_response({
             "data": [
