@@ -875,6 +875,56 @@ class AsyncTaskTests(unittest.TestCase):
         self.assertIn("task_malformed", str(raised.exception))
         self.assertIn("非 JSON", str(raised.exception))
 
+    def test_task_command_wraps_malformed_response_with_id_and_redaction(self):
+        secrets = (
+            "explicit-resource-secret",
+            "sk-model123456",
+            "ak_resource123456",
+            "wk-webhook123456",
+        )
+        response = api.ApiResponse(
+            200,
+            {},
+            ("not-json " + " ".join(secrets)).encode("utf-8"),
+        )
+        with patch.object(cli.api, "request_json", return_value=response) as request:
+            code, _stdout, stderr = run_cli([
+                "task", "task_requested",
+                "--resource-api-key", secrets[0],
+            ])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(request.call_args.args[0], "GET")
+        self.assertIn("task_requested", stderr)
+        self.assertIn("非 JSON", stderr)
+        self.assertNotIn("Traceback", stderr)
+        for secret in secrets:
+            self.assertNotIn(secret, stderr)
+
+    def test_task_command_wraps_url_error_with_id_and_redaction(self):
+        secrets = (
+            "explicit-resource-secret",
+            "sk-model123456",
+            "ak_resource123456",
+            "wk-webhook123456",
+        )
+        failure = urllib.error.URLError("connection " + " ".join(secrets))
+        with patch.object(cli.api, "request_json", side_effect=failure) as request:
+            code, _stdout, stderr = run_cli([
+                "task", "task_requested",
+                "--resource-api-key", secrets[0],
+            ])
+
+        self.assertEqual(code, 1)
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(request.call_args.args[0], "GET")
+        self.assertIn("task_requested", stderr)
+        self.assertIn("connection", stderr)
+        self.assertNotIn("Traceback", stderr)
+        for secret in secrets:
+            self.assertNotIn(secret, stderr)
+
     def test_query_rejects_invalid_ids_and_non_transient_http_fails_immediately(self):
         with patch.object(cli.api, "request_json") as request:
             with self.assertRaises(api.ApiUsageError):
