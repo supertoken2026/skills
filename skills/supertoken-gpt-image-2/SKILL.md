@@ -1,87 +1,244 @@
 ---
 name: supertoken-gpt-image-2
-description: Use when generating or saving images through the SuperToken OpenAI-compatible image API, diagnosing model access, or configuring SuperToken image credentials for GPT Image 2.
+description: Use when generating, editing, saving, querying, or waiting for GPT-Image-2 images and asynchronous tasks through SuperToken, including model access and credentials.
 ---
 
 # SuperToken GPT Image 2
 
-通过 SuperToken 兼容 OpenAI 的图片接口生成图片。默认模型是 `gpt-image-2-count`，也可以切换到 `gpt-image-2`。
+通过 SuperToken 生成或编辑图片，并保存接口返回的每一张图片。默认使用新版同步接口；用户明确需要后台任务、任务 ID 或较长处理时间时，再使用异步任务。
 
-macOS 和 Linux 使用 `python3` 运行脚本；Windows 使用 `py -3`。输出路径应符合当前操作系统的路径格式。
+macOS 和 Linux 使用 `python3`，Windows 使用 `py -3`。先定位此 `SKILL.md` 所在目录，再从该目录运行示例命令。需要端点、字段或限制的准确映射时，读取 [API 参考](references/gpt-image-2-api.md)。
 
-## 使用前配置
+## 选择调用方式
 
-运行时先读取 `SUPERTOKEN_API_KEY`，再读取系统安全存储。若仍未找到 Key，交互式终端会以隐藏方式提示输入。
+| 需求 | 方式 | 命令 | 凭据 |
+| --- | --- | --- | --- |
+| 直接生成并保存图片 | 同步生成 | `generate` | `SUPERTOKEN_API_KEY` |
+| 用参考图或 Mask 编辑并直接保存 | 同步编辑 | `edit` | `SUPERTOKEN_API_KEY` |
+| 后台提交并立即取得任务 ID | 异步创建 | `generate|edit --async` | `SUPERTOKEN_API_KEY` |
+| 查询任务或等待并保存结果 | 异步等待 | `task`、`wait` 或 `--async --wait` | 查询需要 `SUPERTOKEN_RESOURCE_API_KEY`；创建并等待需要两种 Key |
 
-需要单独配置时，运行当前 Skill 目录下的脚本：
+## 凭据与模型
+
+- `SUPERTOKEN_API_KEY` 保存模型 API Token（`sk-...`），用于 `models`、同步请求和异步创建。
+- `SUPERTOKEN_RESOURCE_API_KEY` 保存资源 API Key（`ak_...`），只用于 `task`、`wait` 和异步轮询。两种 Key 不能混用。
+- 本版不读取 Webhook Key，也不运行 Webhook 接收服务。
+- 默认模型是 `gpt-image-2-count`。当 `n > 1` 或请求依赖官方 Images API 的完整参数时，使用 `gpt-image-2`。
+- 只有用户明确指定，或 `models` 已确认账号可用时，才使用 `adobe-gpt-image-2-count`。不要假定账号拥有该模型。
+
+安全配置模型 Token：
 
 ```bash
 python3 scripts/setup.py
 ```
 
-不要把真实 Key 写入 `SKILL.md`、README、提交、Issue 或命令示例。
+资源 Key 可保留在 `SUPERTOKEN_RESOURCE_API_KEY`，或通过 `setup.py --resource-api-key VALUE` 单独保存。
 
-## 生成图片
+不要把真实 Key 写进文档、提交、Issue 或命令示例。
 
-定位当前 `SKILL.md` 所在目录，并使用其中的 `scripts/generate_image.py`。调用格式：
+## 常用命令
 
-```bash
-python3 scripts/generate_image.py --prompt "一只坐在阳光里的小猫" --output ./supertoken-kitten.png
-```
-
-常用参数：
+查询当前账号可用的 GPT Image 2 模型：
 
 ```bash
-python3 scripts/generate_image.py --prompt "一只坐在阳光里的小猫，高清照片风格" --output ./supertoken-kitten.png --size 1024x1024 --quality low
+python3 scripts/supertoken_image.py models
 ```
 
-- 使用 `--model gpt-image-2` 切换模型。
-- 只有用户明确要求格式时才发送 `--format png|jpeg|webp`。
-- 只有用户明确要求背景时才发送 `--background transparent|opaque|auto`。
-- 使用 `--param key=value` 传递单个额外参数。
-- 使用 `--json-params path.json` 传递完整的额外参数对象。
+同步生成一张图片：
 
-## 结果处理
+```bash
+python3 scripts/supertoken_image.py generate \
+  --prompt "一只坐在阳光里的小猫" \
+  --output ./supertoken-kitten.png
+```
 
-脚本同时支持 `data[0].url` 和 `data[0].b64_json`。图片先写入 `.part` 文件，完整保存后再替换目标文件。生成请求不会自动重试，避免产生重复费用。
+生成多张图片时改用 `gpt-image-2`：
 
-成功后向用户报告模型、文件路径和文件大小。不要显示 API Key 或未经脱敏的响应。
+```bash
+python3 scripts/supertoken_image.py generate \
+  --prompt "白色背景上的四款智能手表产品图" \
+  --model gpt-image-2 \
+  --n 4 \
+  --output ./watch.png
+```
 
-## 问题排查
+使用本地图片和本地 Mask 同步编辑：
 
-- `401`：检查 `SUPERTOKEN_API_KEY` 是否有效。
-- `403`：检查当前密钥是否有目标模型权限。
-- `429`：检查请求频率和账户额度。
-- `5xx`：保留请求 ID，并建议用户稍后重试或联系 SuperToken 客服。
+```bash
+python3 scripts/supertoken_image.py edit \
+  --prompt "将 Mask 区域改成日落海边" \
+  --image ./source.png \
+  --mask ./mask.png \
+  --output ./edited.png
+```
+
+使用 URL 参考图同步编辑：
+
+```bash
+python3 scripts/supertoken_image.py edit \
+  --prompt "改成黑白铅笔素描" \
+  --image https://example.com/source.png \
+  --output ./sketch.png
+```
+
+一次 `edit` 只能使用本地文件、URL 或 Base64 中的一种，不能混用。本地 Mask 只能配合本地图片；异步 URL 编辑可使用 URL Mask。Base64 只支持同步编辑，可通过 `--image-base64-file` 读取，避免把长内容写进命令历史。
+
+只创建异步任务时不要传 `--output`。如果只有模型 Token、尚未配置资源 Key，提交前必须告诉用户：任务可以创建，但配置 `SUPERTOKEN_RESOURCE_API_KEY` 之前无法查询或等待。显式提供幂等键，便于提交结果不确定时安全确认或重试：
+
+```bash
+python3 scripts/supertoken_image.py generate \
+  --prompt "夜间城市天际线" \
+  --async \
+  --idempotency-key skyline-20260727
+```
+
+创建任务、等待完成并保存结果：
+
+```bash
+python3 scripts/supertoken_image.py generate \
+  --prompt "夜间城市天际线" \
+  --async \
+  --wait \
+  --output ./skyline.png
+```
+
+查询一次已有任务：
+
+```bash
+python3 scripts/supertoken_image.py task task_example123
+```
+
+恢复等待并保存已有任务的结果：
+
+```bash
+python3 scripts/supertoken_image.py wait task_example123 \
+  --output ./skyline.png
+```
+
+## 结果与失败处理
+
+- 同步请求和 `--async --wait` 会保存所有返回图片。成功后向用户报告模型、存在时的任务 ID，以及 `outputs[]` 中每个绝对路径。
+- 多图结果按 `name-1.png`、`name-2.png` 依次命名。脚本根据文件内容修正扩展名，并通过 `.part` 文件原子保存。
+- 同步生成、同步编辑和异步创建的 POST 不自动重试。手动重试同一个异步请求时，复用原来的 `Idempotency-Key`；不同请求使用新键。
+- `task` 只查询一次；`wait` 会轮询 `queued` 和 `in_progress`，在 `succeeded` 时保存图片，在 `failed` 时停止。
+- 异步 Base64 编辑和 Webhook 接收不在本版范围内。
 
 ## English
 
-Use this Skill to generate images through the SuperToken OpenAI-compatible image API. It defaults to `gpt-image-2-count` and accepts `--model gpt-image-2` as an override.
+Generate or edit images through SuperToken and save every image returned by the API. Use the modern synchronous endpoints by default. Choose an asynchronous task only when the user asks for background execution, a task ID, or longer processing.
 
-Run scripts with `python3` on macOS and Linux or `py -3` on Windows. Use an output path supported by the current operating system.
+Use `python3` on macOS and Linux or `py -3` on Windows. Resolve the directory containing this `SKILL.md` and run the examples from that directory. Read the [API reference](references/gpt-image-2-api.md) when exact endpoint, field, or limit mappings are needed.
 
-### Setup
+### Choose a mode
 
-Read credentials from `SUPERTOKEN_API_KEY` first, then from the operating-system credential store. For explicit setup, resolve the directory containing this `SKILL.md` and run:
+| Need | Mode | Command | Credential |
+| --- | --- | --- | --- |
+| Generate and save images directly | Sync generation | `generate` | `SUPERTOKEN_API_KEY` |
+| Edit references or a Mask and save directly | Sync edit | `edit` | `SUPERTOKEN_API_KEY` |
+| Submit in the background and return a task ID | Async create | `generate|edit --async` | `SUPERTOKEN_API_KEY` |
+| Query a task or wait and save its results | Async wait | `task`, `wait`, or `--async --wait` | Queries need `SUPERTOKEN_RESOURCE_API_KEY`; create-and-wait needs both keys |
+
+### Credentials and models
+
+- `SUPERTOKEN_API_KEY` holds the model API Token (`sk-...`) for `models`, synchronous requests, and asynchronous creation.
+- `SUPERTOKEN_RESOURCE_API_KEY` holds the resource API Key (`ak_...`) only for `task`, `wait`, and polling. Do not swap the two keys.
+- This version does not read a Webhook Key or run a Webhook receiver.
+- The default model is `gpt-image-2-count`. Use `gpt-image-2` when `n > 1` or the request depends on the full official Images API parameters.
+- Use `adobe-gpt-image-2-count` only when the user explicitly selects it or `models` confirms access. Do not assume entitlement.
+
+Configure the model Token securely:
 
 ```bash
 python3 scripts/setup.py
 ```
 
-Never put a real API Key in documentation, commits, issues, or command examples.
+Keep the resource Key in `SUPERTOKEN_RESOURCE_API_KEY`, or store it separately with `setup.py --resource-api-key VALUE`.
 
-### Generate an image
+Never put a real key in documentation, commits, issues, or command examples.
 
-Run the bundled generator from the same Skill directory:
+### Commands
+
+List the account's available GPT Image 2 models:
 
 ```bash
-python3 scripts/generate_image.py --prompt "A tiny fluffy kitten sitting in sunlight" --output ./supertoken-kitten.png
+python3 scripts/supertoken_image.py models
 ```
 
-Use `--model gpt-image-2` for the alternate model. Send `--format`, `--background`, `--param`, and `--json-params` only when the user asks for those options.
+Generate one image synchronously:
+
+```bash
+python3 scripts/supertoken_image.py generate \
+  --prompt "A tiny kitten sitting in sunlight" \
+  --output ./supertoken-kitten.png
+```
+
+Use `gpt-image-2` for multiple images:
+
+```bash
+python3 scripts/supertoken_image.py generate \
+  --prompt "Four smartwatch product images on a white background" \
+  --model gpt-image-2 \
+  --n 4 \
+  --output ./watch.png
+```
+
+Edit synchronously with a local image and local Mask:
+
+```bash
+python3 scripts/supertoken_image.py edit \
+  --prompt "Replace the Mask area with a beach at sunset" \
+  --image ./source.png \
+  --mask ./mask.png \
+  --output ./edited.png
+```
+
+Edit synchronously from a URL reference:
+
+```bash
+python3 scripts/supertoken_image.py edit \
+  --prompt "Convert this to a black-and-white pencil sketch" \
+  --image https://example.com/source.png \
+  --output ./sketch.png
+```
+
+One `edit` invocation must use exactly one input family: local files, URLs, or Base64. Do not mix them. A local Mask requires local images; an asynchronous URL edit may use a URL Mask. Base64 is synchronous-only and can be read with `--image-base64-file` to keep long data out of shell history.
+
+For create-only asynchronous work, omit `--output`. If only the model Token is available, warn the user before submission that the task can be created but cannot be queried or waited on until `SUPERTOKEN_RESOURCE_API_KEY` is configured. Supply an explicit idempotency key when the same request may need to be confirmed or retried:
+
+```bash
+python3 scripts/supertoken_image.py generate \
+  --prompt "A city skyline at night" \
+  --async \
+  --idempotency-key skyline-20260727
+```
+
+Create, wait, and save in one invocation:
+
+```bash
+python3 scripts/supertoken_image.py generate \
+  --prompt "A city skyline at night" \
+  --async \
+  --wait \
+  --output ./skyline.png
+```
+
+Query an existing task once:
+
+```bash
+python3 scripts/supertoken_image.py task task_example123
+```
+
+Resume waiting for an existing task and save its results:
+
+```bash
+python3 scripts/supertoken_image.py wait task_example123 \
+  --output ./skyline.png
+```
 
 ### Results and failures
 
-The script accepts either `data[0].url` or `data[0].b64_json`, writes through a `.part` file, and replaces the target only after a complete save. Report the model, output path, and file size. Never expose the API Key or an unsanitized response.
-
-For `401`, check the API Key. For `403`, check model access. For `429`, check rate limits and account credit. For `5xx`, preserve the request ID for SuperToken support. Do not retry image-generation POST requests automatically.
+- Synchronous requests and `--async --wait` save every returned image. Report the model, the task ID when present, and every absolute path in `outputs[]`.
+- Multiple results are named `name-1.png`, `name-2.png`, and so on. The script corrects the suffix from the file content and saves atomically through a `.part` file.
+- Generation, edit, and task-creation POST requests are never retried automatically. A manual retry of the same asynchronous request must reuse its original `Idempotency-Key`; a different request needs a new key.
+- `task` queries once. `wait` polls `queued` and `in_progress`, saves images on `succeeded`, and stops on `failed`.
+- Asynchronous Base64 editing and Webhook receiving are outside this version.

@@ -4,7 +4,7 @@
   "groupings": [
     {
       "title": "SuperToken",
-      "description": "Image generation skills for SuperToken.",
+      "description": "Image generation and editing skills for SuperToken.",
       "skills": [
         "supertoken-gpt-image-2"
       ]
