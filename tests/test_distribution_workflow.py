@@ -4,11 +4,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "test.yml"
+README = ROOT / "README.md"
 PUBLIC_DOCS = (
-    ROOT / "README.md",
+    README,
     ROOT / "skills" / "supertoken-gpt-image-2" / "SKILL.md",
     ROOT / "skills" / "supertoken-gpt-image-2" / "references"
     / "gpt-image-2-api.md",
+)
+REQUIRED_SKILL_FILES = (
+    "SKILL.md",
+    "agents/openai.yaml",
+    "scripts/generate_image.py",
+    "scripts/setup.py",
+    "scripts/supertoken_api.py",
+    "scripts/supertoken_config.py",
+    "scripts/supertoken_image.py",
+    "references/gpt-image-2-api.md",
 )
 
 
@@ -51,9 +62,7 @@ class DistributionWorkflowTests(unittest.TestCase):
         ):
             self.assertIn(path, text)
         self.assertIn('legacy timeout delegation smoke passed', text)
-        self.assertIn(
-            'assert entry["ref"] == os.environ["CANDIDATE_REF"], entry', text
-        )
+        self.assertIn('assert entry.get("ref") == expected_ref, entry', text)
         self.assertIn(
             'hash_required_skill_files "$GITHUB_WORKSPACE/skills/'
             'supertoken-gpt-image-2"',
@@ -65,18 +74,111 @@ class DistributionWorkflowTests(unittest.TestCase):
             text,
         )
 
+    def test_distribution_upgrades_global_shared_v01_install(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn('v01-global-home', text)
+        self.assertIn('--agent codex claude-code', text)
+        self.assertIn('--global', text)
+        self.assertIn('skills@1.5.19 update -g -y supertoken-gpt-image-2', text)
+        self.assertIn('.agents/.skill-lock.json', text)
+        self.assertIn('global-upgraded-skill-files.sha256', text)
+        self.assertIn('test -L "$global_claude_dir"', text)
+
+    def test_ubuntu_hash_helper_precedes_and_verifies_fresh_installs(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        distribution = text[text.index("  distribution:"):]
+        loop_start = distribution.index("for profile in codex claude-code shared")
+        loop_end = distribution.index("          done", loop_start)
+        local_loop = distribution[loop_start:loop_end]
+
+        self.assertLess(distribution.index("required_skill_files=("), loop_start)
+        self.assertLess(distribution.index("hash_required_skill_files()"), loop_start)
+        self.assertIn('hash_required_skill_files "$expected"', local_loop)
+        self.assertIn('diff -u "$RUNNER_TEMP/candidate-skill-files.sha256"', local_loop)
+        self.assertLess(
+            local_loop.index('diff -u "$RUNNER_TEMP/candidate-skill-files.sha256"'),
+            local_loop.index('python "$expected/scripts/supertoken_image.py" --help'),
+        )
+
+    def test_v01_upgrades_use_event_aware_refs_and_verify_lock_identity(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "CANDIDATE_REF: ${{ github.event_name == 'pull_request' && "
+            "github.event.pull_request.head.sha || '' }}",
+            text,
+        )
+        self.assertIn('target_ref = os.environ["CANDIDATE_REF"] or None', text)
+        self.assertIn('assert entry["source"] == "supertoken2026/skills", entry', text)
+        self.assertIn('assert entry["sourceType"] == "github", entry', text)
+        self.assertIn(
+            'assert entry["skillPath"] == '
+            '"skills/supertoken-gpt-image-2/SKILL.md", entry',
+            text,
+        )
+        self.assertIn('assert entry.get("ref") == expected_ref, entry', text)
+        self.assertGreaterEqual(text.count('assert_github_lock_identity '), 8)
+
+    def test_project_and_global_v01_upgrades_share_complete_cli_smoke(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("smoke_upgraded_cli()", text)
+        self.assertIn('smoke_upgraded_cli "$upgrade_skill_dir"', text)
+        self.assertIn('smoke_upgraded_cli "$global_upgrade_skill_dir"', text)
+        smoke = text[
+            text.index("smoke_upgraded_cli()"):
+            text.index("upgrade_project=", text.index("smoke_upgraded_cli()"))
+        ]
+        for command in ("--help", "generate --help", "edit --help", "wait --help"):
+            self.assertIn(command, smoke)
+        self.assertIn("legacy timeout delegation smoke passed", smoke)
+
+    def test_platform_matrix_smokes_local_shared_install(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+
+        python_job = text[text.index("  python-tests:"):text.index("  distribution:")]
+        self.assertIn('uses: actions/setup-node@v7', python_job)
+        self.assertIn('Smoke local shared install', python_job)
+        self.assertIn('"--agent", "codex", "claude-code"', python_job)
+        for path in REQUIRED_SKILL_FILES:
+            self.assertIn(repr(path), python_job)
+
     def test_update_smokes_restore_every_required_installed_file(self):
         text = WORKFLOW.read_text(encoding="utf-8")
 
         self.assertIn("hash_required_skill_files()", text)
-        for path in (
-            "SKILL.md",
-            "scripts/generate_image.py",
-            "scripts/supertoken_image.py",
-            "scripts/supertoken_api.py",
-            "references/gpt-image-2-api.md",
-        ):
-            self.assertIn(path, text)
+        self.assertIn("required_skill_files=(", text)
+        hash_function = text[
+            text.index("required_skill_files=("):
+            text.index("upgrade_project=", text.index("required_skill_files=("))
+        ]
+        for path in REQUIRED_SKILL_FILES:
+            self.assertIn(path, hash_function)
+
+    def test_upgrade_docs_distinguish_tracking_and_pinned_refs(self):
+        text = README.read_text(encoding="utf-8")
+
+        self.assertIn("从默认分支安装", text)
+        self.assertIn("未指定 `#ref`", text)
+        self.assertIn("可以正常更新", text)
+        self.assertIn("`#v0.1.0`", text)
+        self.assertIn("固定在该 ref", text)
+        self.assertIn("installed from the default branch", text)
+        self.assertIn("unversioned", text.lower())
+        self.assertIn("update normally", text)
+        self.assertIn("remains pinned to that ref", text)
+
+    def test_readme_skills_cli_commands_use_the_pinned_version(self):
+        commands = [
+            line for line in README.read_text(encoding="utf-8").splitlines()
+            if line.startswith("npx ")
+        ]
+
+        self.assertTrue(commands)
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertTrue(command.startswith("npx --yes skills@1.5.19 "))
 
 
 if __name__ == "__main__":

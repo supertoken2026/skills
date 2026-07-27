@@ -23,13 +23,13 @@
 安装到 Codex：
 
 ```bash
-npx skills add supertoken2026/skills --skill supertoken-gpt-image-2 --agent codex --global
+npx --yes skills@1.5.19 add supertoken2026/skills --skill supertoken-gpt-image-2 --agent codex --global
 ```
 
 需要同时在 Codex 和 Claude Code 中使用时，请用一条命令安装到两端：
 
 ```bash
-npx skills add supertoken2026/skills --skill supertoken-gpt-image-2 --agent codex claude-code --global
+npx --yes skills@1.5.19 add supertoken2026/skills --skill supertoken-gpt-image-2 --agent codex claude-code --global
 ```
 
 联合安装后，两端引用同一份 Skill，一次升级即可同步更新。
@@ -38,16 +38,16 @@ npx skills add supertoken2026/skills --skill supertoken-gpt-image-2 --agent code
 
 ```bash
 # 更新单个 Skill
-npx skills update supertoken-gpt-image-2
+npx --yes skills@1.5.19 update supertoken-gpt-image-2
 
 # 仅更新全局安装
-npx skills update -g supertoken-gpt-image-2
+npx --yes skills@1.5.19 update -g supertoken-gpt-image-2
 
 # 仅更新当前项目中的安装
-npx skills update -p supertoken-gpt-image-2
+npx --yes skills@1.5.19 update -p supertoken-gpt-image-2
 ```
 
-通过 `npx skills add` 安装的 Skill 可以使用上述命令升级。手动复制目录的安装方式不提供自动升级。
+未指定 `#ref`、直接从默认分支安装的 Skill 可以正常更新。显式使用 `#v0.1.0`、其他 tag 或 commit 安装时，`skills` 会把安装固定在该 ref，普通更新不会切换版本；如需重新跟随默认分支，请再次执行本页未带 `#ref` 的安装命令。手动复制目录的安装方式不提供自动升级。
 
 ## 配置凭据
 
@@ -225,13 +225,13 @@ The commands below use `python3` on macOS and Linux. Use `py -3` on Windows.
 Install for Codex:
 
 ```bash
-npx skills add supertoken2026/skills --skill supertoken-gpt-image-2 --agent codex --global
+npx --yes skills@1.5.19 add supertoken2026/skills --skill supertoken-gpt-image-2 --agent codex --global
 ```
 
 Install for both Codex and Claude Code in one command:
 
 ```bash
-npx skills add supertoken2026/skills --skill supertoken-gpt-image-2 --agent codex claude-code --global
+npx --yes skills@1.5.19 add supertoken2026/skills --skill supertoken-gpt-image-2 --agent codex claude-code --global
 ```
 
 Both agents then use the same Skill copy, so one update refreshes both.
@@ -240,16 +240,16 @@ Both agents then use the same Skill copy, so one update refreshes both.
 
 ```bash
 # Update one Skill
-npx skills update supertoken-gpt-image-2
+npx --yes skills@1.5.19 update supertoken-gpt-image-2
 
 # Update only the global installation
-npx skills update -g supertoken-gpt-image-2
+npx --yes skills@1.5.19 update -g supertoken-gpt-image-2
 
 # Update only the project installation
-npx skills update -p supertoken-gpt-image-2
+npx --yes skills@1.5.19 update -p supertoken-gpt-image-2
 ```
 
-These update commands require an installation created by `npx skills add`. A manually copied directory cannot be updated automatically.
+Unversioned Skills installed from the default branch update normally. An installation created with an explicit `#v0.1.0`, other tag, or commit remains pinned to that ref during a normal update. Run the unpinned install command on this page again to follow the default branch. A manually copied directory cannot be updated automatically.
 
 ### Configure credentials
 

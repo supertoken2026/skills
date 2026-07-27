@@ -25,10 +25,66 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.10"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.20.0"
       - name: Compile Python files
         run: python -m compileall skills tests
       - name: Run unit tests
         run: python -m unittest discover -s tests -p "test_*.py" -v
+      - name: Smoke local shared install
+        shell: bash
+        env:
+          SOURCE_SKILL_DIR: ${{ github.workspace }}/skills/supertoken-gpt-image-2
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import shutil
+          import subprocess
+          from pathlib import Path
+
+          required = (
+              'SKILL.md',
+              'agents/openai.yaml',
+              'scripts/generate_image.py',
+              'scripts/setup.py',
+              'scripts/supertoken_api.py',
+              'scripts/supertoken_config.py',
+              'scripts/supertoken_image.py',
+              'references/gpt-image-2-api.md',
+          )
+          source = Path(os.environ["SOURCE_SKILL_DIR"]).resolve()
+          project = Path(os.environ["RUNNER_TEMP"]) / "platform-shared-project"
+          project.mkdir(parents=True, exist_ok=True)
+          npx = shutil.which("npx")
+          assert npx, "npx was not found"
+
+          def run(*args, capture=False):
+              return subprocess.run(
+                  [npx, "--yes", "skills@1.5.19", *args],
+                  cwd=project,
+                  check=True,
+                  text=True,
+                  capture_output=capture,
+              )
+
+          run(
+              "add", os.environ["GITHUB_WORKSPACE"],
+              "--skill", "supertoken-gpt-image-2",
+              "--agent", "codex", "claude-code",
+              "--yes",
+          )
+          listed = json.loads(run("list", "--json", capture=True).stdout)
+          matches = [item for item in listed if item["name"] == "supertoken-gpt-image-2"]
+          assert len(matches) == 1, listed
+          installed = Path(matches[0]["path"]).resolve()
+          claude = project / ".claude" / "skills" / "supertoken-gpt-image-2"
+          assert claude.resolve() == installed, (claude, installed)
+          for relative in required:
+              assert (installed / relative).read_bytes() == (source / relative).read_bytes(), relative
+          print("platform shared install smoke passed")
+          PY
       - name: Reject legacy brand strings
         shell: bash
         run: |
@@ -59,7 +115,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      CANDIDATE_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+      CANDIDATE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -74,6 +130,85 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          required_skill_files=(
+            SKILL.md
+            agents/openai.yaml
+            references/gpt-image-2-api.md
+            scripts/generate_image.py
+            scripts/setup.py
+            scripts/supertoken_api.py
+            scripts/supertoken_config.py
+            scripts/supertoken_image.py
+          )
+          hash_required_skill_files() {
+            local skill_dir="$1"
+            local path
+            for path in "${required_skill_files[@]}"; do
+              test -f "$skill_dir/$path"
+              printf '%s %s\n' "$path" "$(sha256sum "$skill_dir/$path" | cut -d ' ' -f 1)"
+            done
+          }
+          assert_github_lock_identity() {
+            local lock_path="$1"
+            local expected_ref="$2"
+            LOCK_PATH="$lock_path" EXPECTED_REF="$expected_ref" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          lock = json.loads(Path(os.environ["LOCK_PATH"]).read_text(encoding="utf-8"))
+          entry = lock["skills"]["supertoken-gpt-image-2"]
+          expected_ref = os.environ["EXPECTED_REF"] or None
+          assert entry["source"] == "supertoken2026/skills", entry
+          assert entry["sourceType"] == "github", entry
+          assert entry["skillPath"] == "skills/supertoken-gpt-image-2/SKILL.md", entry
+          assert entry.get("ref") == expected_ref, entry
+          PY
+          }
+          set_github_lock_ref() {
+            local lock_path="$1"
+            LOCK_PATH="$lock_path" CANDIDATE_REF="$CANDIDATE_REF" python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["LOCK_PATH"])
+          lock = json.loads(path.read_text(encoding="utf-8"))
+          target_ref = os.environ["CANDIDATE_REF"] or None
+          lock["skills"]["supertoken-gpt-image-2"]["ref"] = target_ref
+          path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
+          PY
+          }
+          smoke_upgraded_cli() {
+            local skill_dir="$1"
+            python "$skill_dir/scripts/supertoken_image.py" --help
+            python "$skill_dir/scripts/supertoken_image.py" generate --help
+            python "$skill_dir/scripts/supertoken_image.py" edit --help
+            python "$skill_dir/scripts/supertoken_image.py" wait --help
+            legacy_help="$(python "$skill_dir/scripts/generate_image.py" --help)"
+            grep -q -- '--prompt' <<<"$legacy_help"
+            ! grep -Eq -- '--async|--wait|--idempotency-key|--metadata-json|[{]models,generate' <<<"$legacy_help"
+            UPGRADE_SKILL_DIR="$skill_dir" python - <<'PY'
+          import os
+          import sys
+          from unittest.mock import patch
+
+          scripts = os.path.join(os.environ["UPGRADE_SKILL_DIR"], "scripts")
+          sys.path.insert(0, scripts)
+          import generate_image
+
+          caller = ["--prompt", "cat", "--output", "relative-output.jpg"]
+          with patch.object(generate_image, "image_main", return_value=0) as image_main:
+              assert generate_image.main(caller) == 0
+          image_main.assert_called_once_with(
+              ["generate", *caller, "--timeout", "180"], legacy_output=True
+          )
+          assert caller[-1] == "relative-output.jpg"
+          print("legacy timeout delegation smoke passed")
+          PY
+          }
+          hash_required_skill_files "$GITHUB_WORKSPACE/skills/supertoken-gpt-image-2" \
+            > "$RUNNER_TEMP/candidate-skill-files.sha256"
           for profile in codex claude-code shared; do
             project="$RUNNER_TEMP/local-${profile}-project"
             mkdir -p "$project"
@@ -113,11 +248,12 @@ jobs:
             else
               expected="$project/.agents/skills/supertoken-gpt-image-2"
             fi
-          test -f "$expected/scripts/supertoken_image.py"
-          test -f "$expected/scripts/supertoken_api.py"
-          test -f "$expected/references/gpt-image-2-api.md"
-          python "$expected/scripts/supertoken_image.py" --help
-          python "$expected/scripts/supertoken_image.py" generate --help
+            hash_required_skill_files "$expected" \
+              > "$RUNNER_TEMP/local-${profile}-skill-files.sha256"
+            diff -u "$RUNNER_TEMP/candidate-skill-files.sha256" \
+              "$RUNNER_TEMP/local-${profile}-skill-files.sha256"
+            python "$expected/scripts/supertoken_image.py" --help
+            python "$expected/scripts/supertoken_image.py" generate --help
             python "$expected/scripts/supertoken_image.py" edit --help
             python "$expected/scripts/supertoken_image.py" wait --help
             if [[ "$profile" == "shared" ]]; then
@@ -127,19 +263,6 @@ jobs:
               test "$(realpath "$claude_dir")" = "$skill_dir"
             fi
           done
-          hash_required_skill_files() {
-            local skill_dir="$1"
-            local path
-            for path in \
-              SKILL.md \
-              scripts/generate_image.py \
-              scripts/supertoken_image.py \
-              scripts/supertoken_api.py \
-              references/gpt-image-2-api.md; do
-              test -f "$skill_dir/$path"
-              printf '%s %s\n' "$path" "$(sha256sum "$skill_dir/$path" | cut -d ' ' -f 1)"
-            done
-          }
           upgrade_project="$RUNNER_TEMP/v01-upgrade-project"
           mkdir -p "$upgrade_project"
           cd "$upgrade_project"
@@ -162,56 +285,57 @@ jobs:
           test ! -e "$upgrade_skill_dir/scripts/supertoken_image.py"
           test ! -e "$upgrade_skill_dir/scripts/supertoken_api.py"
           test ! -e "$upgrade_skill_dir/references/gpt-image-2-api.md"
-          CANDIDATE_REF="$CANDIDATE_REF" python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          path = Path("skills-lock.json")
-          lock = json.loads(path.read_text(encoding="utf-8"))
-          lock["skills"]["supertoken-gpt-image-2"]["ref"] = os.environ["CANDIDATE_REF"]
-          path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
-          PY
+          assert_github_lock_identity "$upgrade_project/skills-lock.json" "v0.1.0"
+          set_github_lock_ref "$upgrade_project/skills-lock.json"
+          assert_github_lock_identity "$upgrade_project/skills-lock.json" "$CANDIDATE_REF"
           npx --yes skills@1.5.19 update -p -y supertoken-gpt-image-2
-          CANDIDATE_REF="$CANDIDATE_REF" python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          lock = json.loads(Path("skills-lock.json").read_text(encoding="utf-8"))
-          entry = lock["skills"]["supertoken-gpt-image-2"]
-          assert entry["ref"] == os.environ["CANDIDATE_REF"], entry
-          PY
-          hash_required_skill_files "$GITHUB_WORKSPACE/skills/supertoken-gpt-image-2" \
-            > "$RUNNER_TEMP/candidate-skill-files.sha256"
+          assert_github_lock_identity "$upgrade_project/skills-lock.json" "$CANDIDATE_REF"
           hash_required_skill_files "$upgrade_skill_dir" \
             > "$RUNNER_TEMP/upgraded-skill-files.sha256"
           diff -u "$RUNNER_TEMP/candidate-skill-files.sha256" "$RUNNER_TEMP/upgraded-skill-files.sha256"
-          python "$upgrade_skill_dir/scripts/supertoken_image.py" --help
-          python "$upgrade_skill_dir/scripts/supertoken_image.py" generate --help
-          python "$upgrade_skill_dir/scripts/supertoken_image.py" edit --help
-          python "$upgrade_skill_dir/scripts/supertoken_image.py" wait --help
-          legacy_help="$(python "$upgrade_skill_dir/scripts/generate_image.py" --help)"
-          grep -q -- '--prompt' <<<"$legacy_help"
-          ! grep -Eq -- '--async|--wait|--idempotency-key|--metadata-json|[{]models,generate' <<<"$legacy_help"
-          UPGRADE_SKILL_DIR="$upgrade_skill_dir" python - <<'PY'
-          import os
-          import sys
-          from unittest.mock import patch
+          smoke_upgraded_cli "$upgrade_skill_dir"
+          v01_global_home="$RUNNER_TEMP/v01-global-home"
+          v01_global_project="$RUNNER_TEMP/v01-global-project"
+          mkdir -p "$v01_global_home" "$v01_global_project"
+          cd "$v01_global_project"
+          HOME="$v01_global_home" npx --yes skills@1.5.19 add \
+            "supertoken2026/skills#v0.1.0" \
+            --skill supertoken-gpt-image-2 \
+            --agent codex claude-code \
+            --global \
+            --yes
+          HOME="$v01_global_home" npx --yes skills@1.5.19 list -g --json \
+            > global-skills-list.json
+          global_upgrade_skill_dir="$(python - <<'PY'
+          import json
+          from pathlib import Path
 
-          scripts = os.path.join(os.environ["UPGRADE_SKILL_DIR"], "scripts")
-          sys.path.insert(0, scripts)
-          import generate_image
-
-          caller = ["--prompt", "cat", "--output", "relative-output.jpg"]
-          with patch.object(generate_image, "image_main", return_value=0) as image_main:
-              assert generate_image.main(caller) == 0
-          image_main.assert_called_once_with(
-              ["generate", *caller, "--timeout", "180"], legacy_output=True
-          )
-          assert caller[-1] == "relative-output.jpg"
-          print("legacy timeout delegation smoke passed")
+          listed = json.loads(Path("global-skills-list.json").read_text(encoding="utf-8"))
+          matches = [item for item in listed if item["name"] == "supertoken-gpt-image-2"]
+          assert len(matches) == 1, listed
+          print(Path(matches[0]["path"]).resolve())
           PY
+          )"
+          test -f "$global_upgrade_skill_dir/scripts/generate_image.py"
+          test ! -e "$global_upgrade_skill_dir/scripts/supertoken_image.py"
+          global_canonical_dir="$v01_global_home/.agents/skills/supertoken-gpt-image-2"
+          test "$(realpath "$global_upgrade_skill_dir")" = "$(realpath "$global_canonical_dir")"
+          global_claude_dir="$v01_global_home/.claude/skills/supertoken-gpt-image-2"
+          test -L "$global_claude_dir"
+          test "$(realpath "$global_claude_dir")" = "$global_upgrade_skill_dir"
+          global_lock="$v01_global_home/.agents/.skill-lock.json"
+          assert_github_lock_identity "$global_lock" "v0.1.0"
+          set_github_lock_ref "$global_lock"
+          assert_github_lock_identity "$global_lock" "$CANDIDATE_REF"
+          HOME="$v01_global_home" npx --yes skills@1.5.19 update -g -y \
+            supertoken-gpt-image-2
+          assert_github_lock_identity "$global_lock" "$CANDIDATE_REF"
+          hash_required_skill_files "$global_upgrade_skill_dir" \
+            > "$RUNNER_TEMP/global-upgraded-skill-files.sha256"
+          diff -u "$RUNNER_TEMP/candidate-skill-files.sha256" \
+            "$RUNNER_TEMP/global-upgraded-skill-files.sha256"
+          test "$(realpath "$global_claude_dir")" = "$global_upgrade_skill_dir"
+          smoke_upgraded_cli "$global_upgrade_skill_dir"
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
             for profile in codex shared; do
               project="$RUNNER_TEMP/remote-${profile}-project"
@@ -239,6 +363,7 @@ jobs:
           assert entry["ref"] == "main", entry
           assert entry["skillPath"] == "skills/supertoken-gpt-image-2/SKILL.md", entry
           PY
+              assert_github_lock_identity "$project/skills-lock.json" "main"
               skill_dir="$(python - <<'PY'
           import json
           from pathlib import Path
@@ -257,7 +382,7 @@ jobs:
                 test "$(realpath "$claude_dir")" = "$skill_dir"
               fi
               before="$(hash_required_skill_files "$skill_dir")"
-              for path in SKILL.md scripts/generate_image.py scripts/supertoken_image.py scripts/supertoken_api.py references/gpt-image-2-api.md; do
+              for path in "${required_skill_files[@]}"; do
                 printf '\n# update-smoke\n' >> "$skill_dir/$path"
               done
               mutated="$(hash_required_skill_files "$skill_dir")"
@@ -265,6 +390,7 @@ jobs:
               npx --yes skills@1.5.19 update -p -y supertoken-gpt-image-2
               after="$(hash_required_skill_files "$skill_dir")"
               test "$before" = "$after"
+              assert_github_lock_identity "$project/skills-lock.json" "main"
               if [[ "$profile" == "shared" ]]; then
                 test "$(hash_required_skill_files "$claude_dir")" = "$before"
               fi
@@ -297,6 +423,8 @@ jobs:
                 --global \
                 --yes
               HOME="$home" npx --yes skills@1.5.19 list -g --json > skills-list.json
+              global_lock="$home/.agents/.skill-lock.json"
+              assert_github_lock_identity "$global_lock" ""
               skill_dir="$(python - <<'PY'
           import json
           from pathlib import Path
@@ -315,7 +443,7 @@ jobs:
                 test "$(realpath "$claude_dir")" = "$skill_dir"
               fi
               before="$(hash_required_skill_files "$skill_dir")"
-              for path in SKILL.md scripts/generate_image.py scripts/supertoken_image.py scripts/supertoken_api.py references/gpt-image-2-api.md; do
+              for path in "${required_skill_files[@]}"; do
                 printf '\n# global-update-smoke\n' >> "$skill_dir/$path"
               done
               mutated="$(hash_required_skill_files "$skill_dir")"
@@ -324,7 +452,8 @@ jobs:
               HOME="$home" npx --yes skills@1.5.19 update -g -y supertoken-gpt-image-2
               after="$(hash_required_skill_files "$skill_dir")"
               test "$before" = "$after"
-              for path in SKILL.md scripts/generate_image.py scripts/supertoken_image.py scripts/supertoken_api.py references/gpt-image-2-api.md; do
+              assert_github_lock_identity "$global_lock" ""
+              for path in "${required_skill_files[@]}"; do
                 printf '\n# default-update-smoke\n' >> "$skill_dir/$path"
               done
               mutated="$(hash_required_skill_files "$skill_dir")"
@@ -334,6 +463,7 @@ jobs:
               HOME="$home" npx --yes skills@1.5.19 update -y supertoken-gpt-image-2
               after="$(hash_required_skill_files "$skill_dir")"
               test "$before" = "$after"
+              assert_github_lock_identity "$global_lock" ""
               if [[ "$profile" == "shared" ]]; then
                 test "$(hash_required_skill_files "$claude_dir")" = "$before"
               fi
