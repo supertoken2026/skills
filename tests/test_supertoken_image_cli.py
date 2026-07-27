@@ -589,7 +589,10 @@ class SyncEditTests(unittest.TestCase):
                 return b"A" * size
 
         with patch.object(Path, "open", return_value=OversizedReader()):
-            with self.assertRaisesRegex(api.ApiUsageError, "20 MiB"):
+            with self.assertRaisesRegex(
+                api.ApiUsageError,
+                "编码大小超过上限（对应解码后 20 MiB）",
+            ):
                 cli.classify_edit_inputs(
                     [], ["oversized-base64.txt"], None, False,
                 )
