@@ -171,7 +171,7 @@ class MultipartTests(unittest.TestCase):
             item = api.MultipartFile("image", source, "image/png", payload)
 
             with patch.object(api, "MAX_FILE_BYTES", len(PNG_BYTES)):
-                with self.assertRaisesRegex(api.ApiUsageError, "20 MiB"):
+                with self.assertRaisesRegex(api.ApiUsageError, "不可变字节"):
                     api.encode_multipart([], [item])
 
     def test_encode_multipart_checks_actual_signature_from_subclasses(self):
@@ -185,7 +185,28 @@ class MultipartTests(unittest.TestCase):
                 "image", source, "image/png", DeceptiveBytes(b"not an image"),
             )
 
-            with self.assertRaisesRegex(api.ApiUsageError, "PNG"):
+            with self.assertRaisesRegex(api.ApiUsageError, "不可变字节"):
+                api.encode_multipart([], [item])
+
+    def test_encode_multipart_rejects_overridden_bytes_conversion(self):
+        class ConvertedBytes(bytes):
+            def __len__(self):
+                return 1
+
+            def startswith(self, *_args, **_kwargs):
+                return True
+
+        class DeceptiveBytes(bytes):
+            def __bytes__(self):
+                return ConvertedBytes(PNG_BYTES + b"x")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            item = api.MultipartFile(
+                "image", source, "image/png", DeceptiveBytes(PNG_BYTES),
+            )
+
+            with self.assertRaisesRegex(api.ApiUsageError, "不可变字节"):
                 api.encode_multipart([], [item])
 
     def test_encode_multipart_enforces_image_count(self):
