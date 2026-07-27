@@ -31,6 +31,7 @@ class MultipartFile:
     field: str
     path: Path
     content_type: str
+    data: bytes | None = None
 
 
 class ApiUsageError(ValueError):
@@ -56,6 +57,7 @@ class ValidatedImage:
     path: Path
     format: str
     size: int
+    data: bytes
 
 
 @dataclass(frozen=True)
@@ -93,15 +95,20 @@ def validate_local_images(paths):
         path = Path(raw_path).expanduser()
         if not path.is_file():
             raise ApiUsageError(f"图片文件不存在：{path}。")
-        size = path.stat().st_size
-        if size > MAX_FILE_BYTES:
+        try:
+            with path.open("rb") as stream:
+                data = stream.read(MAX_FILE_BYTES + 1)
+        except OSError as exc:
+            raise ApiUsageError(f"无法读取图片文件：{path}。") from exc
+        if len(data) > MAX_FILE_BYTES:
             raise ApiUsageError(f"单个图片文件不能超过 20 MiB：{path}。")
-        total += size
+        total += len(data)
         if total > MAX_MULTIPART_BYTES:
             raise ApiUsageError("multipart 文件总量不能超过 100 MiB。")
-        with path.open("rb") as stream:
-            image_format = detect_image_format(stream.read(12))
-        validated.append(ValidatedImage(path.resolve(), image_format, size))
+        image_format = detect_image_format(data)
+        validated.append(ValidatedImage(
+            Path(os.path.abspath(path)), image_format, len(data), data,
+        ))
     return validated
 
 
@@ -402,7 +409,10 @@ def _write_staged_file(final, data):
             os.close(descriptor)
         except OSError:
             pass
-        part.unlink(missing_ok=True)
+        try:
+            part.unlink(missing_ok=True)
+        except Exception:
+            pass
         raise
 
 
@@ -502,24 +512,40 @@ def save_image_items(
             backups.append((final, backup))
             os.replace(part, final)
             promoted.append(final)
-        return [
+        saved = [
             SavedImage(final, len(data), image_format, source_url)
             for _part, final, data, image_format, source_url in staged
         ]
-    except Exception:
+    except Exception as primary_error:
+        rollback_failures = []
         for final, backup in reversed(backups):
-            if backup is not None and os.path.lexists(backup):
-                os.replace(backup, final)
-            elif final in promoted:
-                final.unlink(missing_ok=True)
+            try:
+                if backup is not None and os.path.lexists(backup):
+                    os.replace(backup, final)
+                elif final in promoted:
+                    final.unlink(missing_ok=True)
+            except Exception as rollback_error:
+                rollback_failures.append(rollback_error)
+        if rollback_failures:
+            raise ApiResponseError(
+                "图片输出保存失败；恢复不完整，备份已保留。"
+                f"原始错误：{primary_error}"
+            ) from primary_error
         raise
+    else:
+        for _final, backup in backups:
+            if backup is not None and os.path.lexists(backup):
+                try:
+                    backup.unlink()
+                except Exception:
+                    pass
+        return saved
     finally:
         for part, *_rest in staged:
-            part.unlink(missing_ok=True)
-        for _final, backup in backups:
-            if backup is not None:
-                if os.path.lexists(backup):
-                    backup.unlink()
+            try:
+                part.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def endpoint_url(base_url, route):
@@ -553,7 +579,33 @@ def encode_multipart(fields, files, boundary=None):
             str(value).encode("utf-8"),
             b"\r\n",
         ])
+    validated_files = []
+    image_count = 0
+    total = 0
     for item in files:
+        if item.field == "image":
+            image_count += 1
+            if image_count > MAX_IMAGES:
+                raise ApiUsageError("参考图片最多 10 张。")
+        if item.data is None:
+            try:
+                with Path(item.path).open("rb") as stream:
+                    data = stream.read(MAX_FILE_BYTES + 1)
+            except OSError as exc:
+                raise ApiUsageError(f"无法读取图片文件：{item.path}。") from exc
+        elif isinstance(item.data, bytes):
+            data = item.data
+        else:
+            raise ApiUsageError("multipart 图片内容必须是不可变字节。")
+        if len(data) > MAX_FILE_BYTES:
+            raise ApiUsageError(f"单个图片文件不能超过 20 MiB：{item.path}。")
+        detect_image_format(data)
+        total += len(data)
+        if total > MAX_MULTIPART_BYTES:
+            raise ApiUsageError("multipart 文件总量不能超过 100 MiB。")
+        validated_files.append((item, data))
+
+    for item, data in validated_files:
         chunks.extend([
             f"--{boundary}\r\n".encode(),
             (
@@ -561,7 +613,7 @@ def encode_multipart(fields, files, boundary=None):
                 f'filename="{_quoted_header_value(item.path.name)}"\r\n'
             ).encode(),
             f"Content-Type: {item.content_type}\r\n\r\n".encode(),
-            item.path.read_bytes(),
+            data,
             b"\r\n",
         ])
     chunks.append(f"--{boundary}--\r\n".encode())

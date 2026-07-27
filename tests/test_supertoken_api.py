@@ -86,8 +86,8 @@ class MultipartTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             first = Path(temp_dir) / "one.png"
             second = Path(temp_dir) / "two.png"
-            first.write_bytes(b"one")
-            second.write_bytes(b"two")
+            first.write_bytes(PNG_BYTES)
+            second.write_bytes(PNG_BYTES)
             body, content_type = api.encode_multipart(
                 [("model", "gpt-image-2")],
                 [
@@ -102,6 +102,72 @@ class MultipartTests(unittest.TestCase):
     def test_encode_multipart_rejects_newline_in_header_values(self):
         with self.assertRaisesRegex(api.ApiUsageError, "换行符"):
             api.encode_multipart([("model\nname", "gpt-image-2")], [])
+
+    def test_validated_snapshot_is_uploaded_after_source_path_changes(self):
+        replacement = b"\xff\xd8\xffreplacement"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            source.write_bytes(PNG_BYTES)
+            validated = api.validate_local_images([source])[0]
+            self.assertTrue(
+                hasattr(validated, "data"),
+                "validated images must retain the bytes that passed validation",
+            )
+            source.write_bytes(replacement)
+
+            body, _content_type = api.encode_multipart(
+                [],
+                [api.MultipartFile(
+                    "image", validated.path, "image/png", validated.data,
+                )],
+                boundary="snapshot-boundary",
+            )
+
+        self.assertIn(PNG_BYTES, body)
+        self.assertNotIn(replacement, body)
+        self.assertIn(b'filename="source.png"', body)
+
+    def test_encode_multipart_rejects_invalid_signature_bytes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            source.write_bytes(b"not an image")
+            invalid = api.MultipartFile("image", source, "image/png")
+            with self.assertRaisesRegex(api.ApiUsageError, "PNG"):
+                api.encode_multipart([], [invalid])
+
+    def test_encode_multipart_rejects_oversized_bytes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            source.write_bytes(PNG_BYTES + b"x" * 8)
+            oversized = api.MultipartFile("image", source, "image/png")
+            with patch.object(api, "MAX_FILE_BYTES", len(PNG_BYTES) + 7):
+                with self.assertRaisesRegex(api.ApiUsageError, "20 MiB"):
+                    api.encode_multipart([], [oversized])
+
+    def test_encode_multipart_enforces_image_count(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            source.write_bytes(PNG_BYTES)
+            files = [
+                api.MultipartFile("image", source, "image/png")
+                for _index in range(api.MAX_IMAGES + 1)
+            ]
+            with self.assertRaisesRegex(api.ApiUsageError, "最多 10 张"):
+                api.encode_multipart([], files)
+
+    def test_encode_multipart_enforces_combined_image_and_mask_size(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            padded = PNG_BYTES + b"x" * 4
+            source.write_bytes(padded)
+            files = [
+                api.MultipartFile("image", source, "image/png"),
+                api.MultipartFile("mask", source, "image/png"),
+            ]
+            with patch.object(api, "MAX_FILE_BYTES", len(padded)):
+                with patch.object(api, "MAX_MULTIPART_BYTES", len(padded) * 2 - 1):
+                    with self.assertRaisesRegex(api.ApiUsageError, "100 MiB"):
+                        api.encode_multipart([], files)
 
 
 class DiagnosticTests(unittest.TestCase):
@@ -341,7 +407,7 @@ class RequestTests(unittest.TestCase):
     def test_request_multipart_sets_bearer_header_and_matching_boundary(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             image = Path(temp_dir) / "source.png"
-            image.write_bytes(b"image-bytes")
+            image.write_bytes(PNG_BYTES)
             with patch.object(
                 api,
                 "_open_url",
@@ -535,6 +601,30 @@ class ImageValidationAndOutputTests(unittest.TestCase):
             with self.assertRaisesRegex(api.ApiUsageError, "20 MiB"):
                 api.validate_local_images([oversized])
 
+    def test_validate_local_images_reads_a_bounded_immutable_snapshot(self):
+        read_sizes = []
+
+        class TrackingStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def read(self, size=-1):
+                read_sizes.append(size)
+                return PNG_BYTES
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            source.write_bytes(PNG_BYTES)
+            with patch.object(Path, "open", return_value=TrackingStream()):
+                validated = api.validate_local_images([source])[0]
+
+        self.assertEqual(read_sizes, [api.MAX_FILE_BYTES + 1])
+        self.assertEqual(validated.data, PNG_BYTES)
+        self.assertEqual(validated.size, len(PNG_BYTES))
+
     def test_save_image_items_names_every_result(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             items = [
@@ -595,6 +685,32 @@ class ImageValidationAndOutputTests(unittest.TestCase):
 
             self.assertEqual(list(Path(temp_dir).iterdir()), [])
 
+    def test_staged_write_cleanup_error_does_not_hide_write_failure(self):
+        item = {"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}
+
+        class FailingWriter:
+            def __init__(self, descriptor):
+                self.descriptor = descriptor
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                api.os.close(self.descriptor)
+
+            def write(self, _data):
+                raise OSError("write marker")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "result.png"
+            with patch.object(
+                api.os, "fdopen",
+                side_effect=lambda descriptor, _mode: FailingWriter(descriptor),
+            ):
+                with patch.object(Path, "unlink", side_effect=OSError("cleanup marker")):
+                    with self.assertRaisesRegex(OSError, "write marker"):
+                        api.save_image_items([item], output, 5)
+
     def test_save_image_items_rejects_more_than_ten_before_writing(self):
         item = {"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -639,6 +755,84 @@ class ImageValidationAndOutputTests(unittest.TestCase):
             self.assertFalse(any(source == output for source, _ in replace_calls))
             self.assertTrue(any(destination == output for _, destination in replace_calls))
             self.assertEqual(output.read_bytes(), PNG_BYTES)
+
+    def test_partial_rollback_continues_and_retains_unrestored_backup(self):
+        item = {"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            first = root / "result-1.png"
+            second = root / "result-2.png"
+            first.write_bytes(b"first-original")
+            second.write_bytes(b"second-original")
+            real_replace = api.os.replace
+            restore_attempts = []
+
+            def failing_replace(source, destination):
+                source = Path(source)
+                destination = Path(destination)
+                if source.name.endswith(".part") and destination == second:
+                    raise OSError("promotion marker")
+                if source.name.endswith(".backup"):
+                    restore_attempts.append(destination)
+                    if destination == second:
+                        raise OSError("restore marker")
+                return real_replace(source, destination)
+
+            with patch.object(api.os, "replace", side_effect=failing_replace):
+                try:
+                    api.save_image_items([item, item], root / "result.png", 5)
+                except Exception as exc:
+                    raised = exc
+                else:
+                    self.fail("promotion failure should be reported")
+
+            self.assertIsInstance(raised, api.ApiResponseError)
+            message = str(raised)
+            self.assertIn("promotion marker", message)
+            self.assertIn("恢复不完整", message)
+            self.assertIn("备份已保留", message)
+            self.assertEqual(restore_attempts, [second, first])
+            self.assertEqual(first.read_bytes(), b"first-original")
+            self.assertEqual(second.read_bytes(), b"second-original")
+            retained = list(root.glob(".result-2.png.*.backup"))
+            self.assertEqual(len(retained), 1)
+            self.assertEqual(retained[0].read_bytes(), b"second-original")
+            self.assertEqual(list(root.glob("*.part")), [])
+
+    def test_part_cleanup_failures_do_not_stop_later_cleanup_or_hide_primary(self):
+        item = {"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            real_replace = api.os.replace
+            real_unlink = Path.unlink
+            failed_cleanup = False
+
+            def failing_replace(source, destination):
+                source = Path(source)
+                destination = Path(destination)
+                if source.name.endswith(".part") and destination.name == "result-2.png":
+                    raise OSError("primary marker")
+                return real_replace(source, destination)
+
+            def failing_unlink(path, *args, **kwargs):
+                nonlocal failed_cleanup
+                if (
+                    not failed_cleanup
+                    and path.name.endswith(".part")
+                    and api.os.path.lexists(path)
+                ):
+                    failed_cleanup = True
+                    real_unlink(path, *args, **kwargs)
+                    raise OSError("cleanup marker")
+                return real_unlink(path, *args, **kwargs)
+
+            with patch.object(api.os, "replace", side_effect=failing_replace):
+                with patch.object(Path, "unlink", new=failing_unlink):
+                    with self.assertRaisesRegex(OSError, "primary marker"):
+                        api.save_image_items([item, item, item], root / "result.png", 5)
+
+            self.assertTrue(failed_cleanup)
+            self.assertEqual(list(root.glob("*.part")), [])
 
     @unittest.skipUnless(hasattr(Path, "symlink_to"), "symlinks unavailable")
     def test_save_image_items_replaces_output_symlink_without_touching_target(self):
