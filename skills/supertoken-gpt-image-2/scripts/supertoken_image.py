@@ -672,9 +672,12 @@ def run_async_create(args, base_url, api_key, inputs=None, wait_runtime=None):
 
 
 def run_task_command(args, base_url, resource_key):
-    task, _headers = query_task(
-        base_url, resource_key, args.task_id, args.timeout
-    )
+    try:
+        task, _headers = query_task(
+            base_url, resource_key, args.task_id, args.timeout
+        )
+    except (urllib.error.URLError, api.ApiResponseError) as exc:
+        raise terminal_task_error(args.task_id, exc, resource_key) from exc
     print(json.dumps(task, ensure_ascii=False, indent=2))
 
 
