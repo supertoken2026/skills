@@ -8,18 +8,45 @@ import os
 import platform
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 
+CONFIG_VERSION = 2
 APP_NAME = "gpt-image-2"
 BRAND = "supertoken"
-DEFAULT_BASE_URL = "https://api.supertoken.cc/image-wrapper/v1"
-DEFAULT_MODEL = "gpt-image-2-count"
 SERVICE_NAME = "supertoken-gpt-image-2"
-ACCOUNT_NAME = "default"
+DEFAULT_BASE_URL = "https://api.supertoken.cc"
+LEGACY_BASE_URL = "https://api.supertoken.cc/image-wrapper/v1"
+DEFAULT_MODEL = "gpt-image-2-count"
+MODEL_KEY = "model"
+RESOURCE_KEY = "resource"
 API_KEY_ENV = "SUPERTOKEN_API_KEY"
+RESOURCE_API_KEY_ENV = "SUPERTOKEN_RESOURCE_API_KEY"
 CONFIG_DIR_ENV = "SUPERTOKEN_GPT_IMAGE_2_CONFIG_DIR"
 DISABLE_SECURE_STORE_ENV = "SUPERTOKEN_GPT_IMAGE_2_DISABLE_SECURE_STORE"
+
+
+@dataclass(frozen=True)
+class CredentialSpec:
+    kind: str
+    env_name: str
+    account_name: str
+    plaintext_field: str
+    dpapi_filename: str
+    label: str
+
+
+CREDENTIALS = {
+    MODEL_KEY: CredentialSpec(
+        MODEL_KEY, API_KEY_ENV, "default", "api_key", "credentials.dpapi",
+        "SuperToken GPT Image 2 API Key",
+    ),
+    RESOURCE_KEY: CredentialSpec(
+        RESOURCE_KEY, RESOURCE_API_KEY_ENV, "resource", "resource_api_key",
+        "resource-credentials.dpapi", "SuperToken Resource API Key",
+    ),
+}
 
 
 class ConfigError(RuntimeError):
@@ -70,145 +97,92 @@ def plaintext_credentials_path():
     return config_dir() / "credentials.json"
 
 
-def windows_dpapi_path():
-    return config_dir() / "credentials.dpapi"
+def _atomic_write_text(path, text, mode=None):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    part = Path(f"{path}.part")
+    part.unlink(missing_ok=True)
+    try:
+        part.write_text(text, encoding="utf-8")
+        if mode is not None and os.name == "posix":
+            part.chmod(mode)
+        part.replace(path)
+    finally:
+        part.unlink(missing_ok=True)
+
+
+def build_config(base_url=DEFAULT_BASE_URL, model=DEFAULT_MODEL):
+    if not isinstance(base_url, str) or not base_url.strip():
+        raise ConfigError("配置文件中的 base_url 必须是非空字符串。")
+    if not isinstance(model, str) or not model.strip():
+        raise ConfigError("配置文件中的 model 必须是非空字符串。")
+    return {
+        "version": CONFIG_VERSION,
+        "base_url": base_url.rstrip("/"),
+        "model": model,
+    }
+
+
+def save_config(value):
+    _atomic_write_text(
+        config_path(), json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    )
 
 
 def load_config():
     path = config_path()
     if not path.exists():
         return {}
-    return _read_json_object(path, "配置文件")
+    value = _read_json_object(path, "配置文件")
+    if value.get("version") == CONFIG_VERSION:
+        return build_config(value.get("base_url"), value.get("model"))
+    base_url = value.get("base_url") or DEFAULT_BASE_URL
+    if isinstance(base_url, str) and base_url.rstrip("/") == LEGACY_BASE_URL:
+        base_url = DEFAULT_BASE_URL
+    migrated = build_config(base_url, value.get("model") or DEFAULT_MODEL)
+    save_config(migrated)
+    return migrated
 
 
-def save_config(config):
-    path = config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-
-def build_config(base_url=DEFAULT_BASE_URL, model=DEFAULT_MODEL):
-    return {
-        "base_url": base_url.rstrip("/"),
-        "model": model,
-    }
-
-
-def get_api_key():
-    env_key = os.environ.get(API_KEY_ENV)
-    if env_key:
-        return env_key
-
-    system = platform.system()
-    if system == "Darwin":
-        value = _macos_read_key()
-        if value:
-            return value
-    elif system == "Windows":
-        value = _windows_read_key()
-        if value:
-            return value
-    else:
-        value = _linux_read_key()
-        if value:
-            return value
-
-    return _plaintext_read_key()
-
-
-def save_api_key(api_key, allow_plaintext=False):
-    if not api_key:
-        raise ConfigError("需要 SuperToken API Key。")
-
-    system = platform.system()
-    if not os.environ.get(DISABLE_SECURE_STORE_ENV):
-        if system == "Darwin":
-            if _macos_write_key(api_key):
-                return "macos-keychain"
-        elif system == "Windows":
-            if _windows_write_key(api_key):
-                return "windows-dpapi"
-        else:
-            if _linux_write_key(api_key):
-                return "linux-secret-service"
-
-    if allow_plaintext:
-        _plaintext_write_key(api_key)
-        return "plaintext-fallback"
-
-    raise ConfigError(
-        "未找到可用的系统安全存储。请设置 SUPERTOKEN_API_KEY，或明确启用受权限保护的明文存储。"
-    )
-
-
-def _macos_read_key():
+def _macos_read_key(spec):
     if not shutil.which("security"):
         return None
     result = subprocess.run(
-        ["security", "find-generic-password", "-a", ACCOUNT_NAME, "-s", SERVICE_NAME, "-w"],
-        text=True,
-        capture_output=True,
-        check=False,
+        ["security", "find-generic-password", "-a", spec.account_name,
+         "-s", SERVICE_NAME, "-w"],
+        text=True, capture_output=True, check=False,
     )
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip() or None
+    return result.stdout.strip() or None if result.returncode == 0 else None
 
 
-def _macos_write_key(api_key):
+def _macos_write_key(spec, value):
     if not shutil.which("security"):
         return False
     result = subprocess.run(
-        [
-            "security",
-            "add-generic-password",
-            "-a",
-            ACCOUNT_NAME,
-            "-s",
-            SERVICE_NAME,
-            "-w",
-            api_key,
-            "-U",
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
+        ["security", "add-generic-password", "-a", spec.account_name,
+         "-s", SERVICE_NAME, "-w", value, "-U"],
+        text=True, capture_output=True, check=False,
     )
     return result.returncode == 0
 
 
-def _linux_read_key():
+def _linux_read_key(spec):
     if not shutil.which("secret-tool"):
         return None
     result = subprocess.run(
-        ["secret-tool", "lookup", "service", SERVICE_NAME, "account", ACCOUNT_NAME],
-        text=True,
-        capture_output=True,
-        check=False,
+        ["secret-tool", "lookup", "service", SERVICE_NAME,
+         "account", spec.account_name],
+        text=True, capture_output=True, check=False,
     )
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip() or None
+    return result.stdout.strip() or None if result.returncode == 0 else None
 
 
-def _linux_write_key(api_key):
+def _linux_write_key(spec, value):
     if not shutil.which("secret-tool"):
         return False
     result = subprocess.run(
-        [
-            "secret-tool",
-            "store",
-            "--label",
-            "SuperToken GPT Image 2 API Key",
-            "service",
-            SERVICE_NAME,
-            "account",
-            ACCOUNT_NAME,
-        ],
-        input=api_key,
-        text=True,
-        capture_output=True,
-        check=False,
+        ["secret-tool", "store", "--label", spec.label, "service", SERVICE_NAME,
+         "account", spec.account_name],
+        input=value, text=True, capture_output=True, check=False,
     )
     return result.returncode == 0
 
@@ -256,49 +230,118 @@ def _windows_unprotect(data):
         kernel32.LocalFree(out_blob.pbData)
 
 
-def _windows_read_key():
-    path = windows_dpapi_path()
+def windows_dpapi_path(spec):
+    return config_dir() / spec.dpapi_filename
+
+
+def _windows_read_key(spec):
+    path = windows_dpapi_path(spec)
     if not path.exists():
         return None
     try:
         encrypted = base64.b64decode(path.read_bytes(), validate=True)
-    except OSError as exc:
-        raise ConfigError(f"无法读取 DPAPI 凭据文件：{path}。") from exc
-    except (binascii.Error, ValueError) as exc:
-        raise ConfigError(f"DPAPI 凭据文件格式无效：{path}。请删除该文件后重新配置。") from exc
-    try:
         plain = _windows_unprotect(encrypted)
+        return plain.decode("utf-8") if plain else None
     except OSError as exc:
-        raise ConfigError(f"无法解密 DPAPI 凭据文件：{path}。请删除该文件后重新配置。") from exc
-    if not plain:
-        return None
-    try:
-        return plain.decode("utf-8")
-    except UnicodeError as exc:
-        raise ConfigError(f"DPAPI 凭据文件格式无效：{path}。请删除该文件后重新配置。") from exc
+        raise ConfigError(f"无法读取或解密 DPAPI 凭据文件：{path}。") from exc
+    except (binascii.Error, ValueError, UnicodeError) as exc:
+        raise ConfigError(f"DPAPI 凭据文件格式无效：{path}。请删除后重新配置。") from exc
 
 
-def _windows_write_key(api_key):
-    encrypted = _windows_protect(api_key.encode("utf-8"))
+def _windows_write_key(spec, value):
+    encrypted = _windows_protect(value.encode("utf-8"))
     if not encrypted:
         return False
-    path = windows_dpapi_path()
+    path = windows_dpapi_path(spec)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(base64.b64encode(encrypted))
+    part = Path(f"{path}.part")
+    part.unlink(missing_ok=True)
+    try:
+        part.write_bytes(base64.b64encode(encrypted))
+        part.replace(path)
+    finally:
+        part.unlink(missing_ok=True)
     return True
 
 
-def _plaintext_read_key():
+def _plaintext_read_key(spec):
     path = plaintext_credentials_path()
     if not path.exists():
         return None
-    data = _read_json_object(path, "凭据文件")
-    return data.get("api_key")
+    return _read_json_object(path, "凭据文件").get(spec.plaintext_field)
 
 
-def _plaintext_write_key(api_key):
+def _plaintext_write_key(spec, value):
     path = plaintext_credentials_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"api_key": api_key}, indent=2) + "\n", encoding="utf-8")
-    if os.name == "posix":
-        path.chmod(0o600)
+    stored = _read_json_object(path, "凭据文件") if path.exists() else {}
+    stored[spec.plaintext_field] = value
+    _atomic_write_text(path, json.dumps(stored, indent=2) + "\n", mode=0o600)
+
+
+def _credential_spec(kind):
+    try:
+        return CREDENTIALS[kind]
+    except KeyError as exc:
+        raise ConfigError(f"未知的凭据类型：{kind}。") from exc
+
+
+def _validate_key_kind(value, spec):
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{spec.env_name} 必须是非空字符串。")
+    expected_labels = {
+        MODEL_KEY: "模型 API Token（sk-...）",
+        RESOURCE_KEY: "资源 API Key（ak_...）",
+    }
+    mismatches = {
+        MODEL_KEY: (("ak_", "资源 API Key"), ("wk-", "Webhook Key")),
+        RESOURCE_KEY: (("sk-", "模型 API Token"), ("wk-", "Webhook Key")),
+    }
+    for prefix, actual_label in mismatches[spec.kind]:
+        if value.startswith(prefix):
+            raise ConfigError(
+                f"{spec.env_name} 需要 {expected_labels[spec.kind]}，"
+                f"当前值看起来是 {actual_label}。"
+            )
+    return value
+
+
+def get_api_key(kind=MODEL_KEY):
+    spec = _credential_spec(kind)
+    env_key = os.environ.get(spec.env_name)
+    if env_key:
+        return _validate_key_kind(env_key, spec)
+    system = platform.system()
+    if system == "Darwin":
+        value = _macos_read_key(spec)
+    elif system == "Windows":
+        value = _windows_read_key(spec)
+    else:
+        value = _linux_read_key(spec)
+    value = value or _plaintext_read_key(spec)
+    return _validate_key_kind(value, spec) if value else None
+
+
+def save_api_key(api_key, allow_plaintext=False, kind=MODEL_KEY):
+    spec = _credential_spec(kind)
+    if not api_key:
+        raise ConfigError(f"需要 {spec.env_name} 对应的 Key。")
+    _validate_key_kind(api_key, spec)
+    system = platform.system()
+    if not os.environ.get(DISABLE_SECURE_STORE_ENV):
+        writers = {
+            "Darwin": _macos_write_key,
+            "Windows": _windows_write_key,
+        }
+        writer = writers.get(system, _linux_write_key)
+        if writer(spec, api_key):
+            return {
+                "Darwin": "macos-keychain",
+                "Windows": "windows-dpapi",
+            }.get(system, "linux-secret-service")
+    if allow_plaintext:
+        _plaintext_write_key(spec, api_key)
+        return "plaintext-fallback"
+    raise ConfigError(
+        f"未找到可用的系统安全存储。请设置 {spec.env_name}，"
+        "或明确启用受权限保护的明文存储。"
+    )
