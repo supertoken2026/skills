@@ -6,6 +6,8 @@ import json
 import socket
 import sys
 import tempfile
+import threading
+import time
 import urllib.error
 import urllib.response
 import unittest
@@ -701,6 +703,7 @@ class ImageValidationAndOutputTests(unittest.TestCase):
             "http://cdn.example.test/image.png",
             f"https://user:pass@cdn.example.test/image.png?signature={signed_secret}",
             f"https://cdn.example.test/image.png?signature={signed_secret}#fragment",
+            "https://cdn.example.test/image.png#",
             f"https://cdn.example.test/im age.png?signature={signed_secret}",
             f"https://cdn.example.test/image.png?signature={signed_secret}\x1b",
             f"https://cdn.example.test:0/image.png?signature={signed_secret}",
@@ -776,9 +779,111 @@ class ImageValidationAndOutputTests(unittest.TestCase):
         legacy_open.assert_not_called()
         result_open.assert_not_called()
 
-    def test_download_does_not_follow_redirect_or_read_redirect_body(self):
-        counts = {"source": 0, "target": 0}
+    def test_result_connection_receives_only_the_validated_address_set(self):
+        response = FakeResponse(200, {}, PNG_BYTES)
+        resolutions = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))
+        ]
+        with patch.object(socket, "getaddrinfo", return_value=resolutions) as resolve:
+            with patch.object(api, "_open_result_url", return_value=response) as open_url:
+                api.download_image("https://cdn.example.test/image.png", 5)
 
+        resolve.assert_called_once()
+        call = open_url.call_args
+        self.assertEqual(call.kwargs.get("host"), "cdn.example.test")
+        self.assertEqual(call.kwargs.get("port"), 443)
+        self.assertEqual(
+            [item.socket_address for item in call.kwargs.get("addresses", ())],
+            [("8.8.8.8", 443)],
+        )
+
+    def test_pinned_connection_uses_approved_address_without_resolving_again(self):
+        connection_type = getattr(api, "_PinnedHTTPSConnection", None)
+        self.assertIsNotNone(connection_type)
+
+        class ApprovedAddress:
+            family = socket.AF_INET
+            socket_type = socket.SOCK_STREAM
+            protocol = socket.IPPROTO_TCP
+            socket_address = ("8.8.8.8", 443)
+
+        class FakeSocket:
+            def __init__(self):
+                self.timeout = None
+                self.connected_address = None
+
+            def settimeout(self, timeout):
+                self.timeout = timeout
+
+            def connect(self, address):
+                self.connected_address = address
+
+            def setsockopt(self, *_args):
+                pass
+
+            def close(self):
+                pass
+
+        class FakeTLSContext:
+            def __init__(self):
+                self.server_hostname = None
+
+            def wrap_socket(self, raw_socket, *, server_hostname):
+                self.server_hostname = server_hostname
+                return raw_socket
+
+        raw_socket = FakeSocket()
+        tls_context = FakeTLSContext()
+        connection = connection_type(
+            "cdn.example.test", 443, ApprovedAddress(), timeout=2.5
+        )
+        connection._context = tls_context
+
+        with patch.object(
+            socket,
+            "getaddrinfo",
+            side_effect=AssertionError("pinned connection performed a second lookup"),
+        ) as resolve:
+            with patch.object(socket, "socket", return_value=raw_socket) as create_socket:
+                connection.connect()
+
+        resolve.assert_not_called()
+        create_socket.assert_called_once_with(
+            socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP
+        )
+        self.assertEqual(raw_socket.timeout, 2.5)
+        self.assertEqual(raw_socket.connected_address, ("8.8.8.8", 443))
+        self.assertEqual(tls_context.server_hostname, "cdn.example.test")
+        self.assertIs(connection.sock, raw_socket)
+
+    def test_result_dns_resolution_is_bounded_by_the_absolute_deadline(self):
+        release = threading.Event()
+
+        def delayed_resolution(*_args, **_kwargs):
+            release.wait(0.3)
+            return public_dns_result("cdn.example.test", 443)
+
+        started = time.monotonic()
+        deadline = started + 0.05
+        try:
+            with patch.object(socket, "getaddrinfo", side_effect=delayed_resolution):
+                with patch.object(api, "_open_result_url") as open_url:
+                    with self.assertRaises(api.ApiResponseError) as raised:
+                        api.download_image(
+                            "https://cdn.example.test/image.png",
+                            5,
+                            deadline=deadline,
+                            deadline_message="等待任务 task_dns 超过 0.05 秒。",
+                        )
+        finally:
+            release.set()
+
+        self.assertLess(time.monotonic() - started, 0.2)
+        self.assertEqual(str(raised.exception), "等待任务 task_dns 超过 0.05 秒。")
+        self.assertTrue(getattr(raised.exception, "deadline_exceeded", False))
+        open_url.assert_not_called()
+
+    def test_download_does_not_follow_redirect_or_read_redirect_body(self):
         class TrackingBody(io.BytesIO):
             read_calls = 0
 
@@ -787,45 +892,21 @@ class ImageValidationAndOutputTests(unittest.TestCase):
                 return super().read(size)
 
         redirect_body = TrackingBody(b"signed redirect body")
-
-        class SimulatedTransport(urllib.request.BaseHandler):
-            handler_order = 100
-
-            def https_open(self, request):
-                if urllib.parse.urlsplit(request.full_url).hostname == "target.example.test":
-                    counts["target"] += 1
-                    return urllib.response.addinfourl(
-                        io.BytesIO(PNG_BYTES), {}, request.full_url, 200
-                    )
-                counts["source"] += 1
-                headers = email.message.Message()
-                headers["Location"] = "https://target.example.test/image.png"
-                response = urllib.response.addinfourl(
-                    redirect_body, headers, request.full_url, 302
-                )
-                response.msg = "Found"
-                return response
-
-        legacy_opener = urllib.request.build_opener(SimulatedTransport())
-        safe_opener = urllib.request.build_opener(
-            api._NoRedirectHandler(), SimulatedTransport()
+        headers = email.message.Message()
+        headers["Location"] = "https://target.example.test/image.png"
+        response = urllib.response.addinfourl(
+            redirect_body,
+            headers,
+            "https://source.example.test/start",
+            302,
         )
+        response.msg = "Found"
         with patch.object(socket, "getaddrinfo", side_effect=public_dns_result):
-            with patch.object(api.urllib.request, "_opener", legacy_opener):
-                with patch.object(api, "_RESULT_OPENER", safe_opener, create=True):
-                    try:
-                        api.download_image("https://source.example.test/start", 5)
-                    except Exception as exc:
-                        try:
-                            self.assertIsInstance(exc, api.ApiResponseError)
-                            self.assertIn("重定向", str(exc))
-                        finally:
-                            if isinstance(exc, urllib.error.HTTPError):
-                                exc.close()
-                    else:
-                        self.fail("download_image followed a redirect")
+            with patch.object(api, "_open_result_url", return_value=response) as open_url:
+                with self.assertRaisesRegex(api.ApiResponseError, "重定向"):
+                    api.download_image("https://source.example.test/start", 5)
 
-        self.assertEqual(counts, {"source": 1, "target": 0})
+        open_url.assert_called_once()
         self.assertEqual(redirect_body.read_calls, 0)
 
     def test_download_does_not_read_an_error_response_body(self):
@@ -920,3 +1001,43 @@ class ImageValidationAndOutputTests(unittest.TestCase):
                             )
 
             self.assertFalse(output.exists())
+
+    def test_real_http_response_read_is_interrupted_at_the_absolute_deadline(self):
+        server, client = socket.socketpair()
+        response = None
+        try:
+            client.settimeout(0.3)
+            server.sendall(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nA"
+            )
+            response = http.client.HTTPResponse(client)
+            response.begin()
+            started = time.monotonic()
+            caught = None
+            try:
+                api.bounded_read(
+                    response,
+                    16,
+                    "图片下载响应",
+                    response.headers,
+                    deadline=started + 0.05,
+                    deadline_message="等待任务 task_real_stream 超过 0.05 秒。",
+                )
+            except Exception as exc:
+                caught = exc
+            else:
+                self.fail("real HTTP response exceeded the deadline without failing")
+            elapsed = time.monotonic() - started
+        finally:
+            if response is not None:
+                response.close()
+            client.close()
+            server.close()
+
+        self.assertLess(elapsed, 0.2)
+        self.assertIsInstance(caught, api.ApiResponseError)
+        self.assertEqual(
+            str(caught),
+            "等待任务 task_real_stream 超过 0.05 秒。",
+        )
+        self.assertTrue(getattr(caught, "deadline_exceeded", False))

@@ -887,6 +887,8 @@ def _async_result(
             monotonic=monotonic,
         )
     except api.ApiResponseError as exc:
+        if getattr(exc, "deadline_exceeded", False):
+            raise
         raise api.ApiResponseError(
             f"异步任务 {task_id} 的结果无效：{exc}"
         ) from exc

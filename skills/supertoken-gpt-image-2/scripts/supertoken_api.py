@@ -5,9 +5,11 @@ import http.client
 import ipaddress
 import json
 import os
+import queue
 import re
 import socket
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -64,6 +66,14 @@ class SavedImage:
     source_url: str | None
 
 
+@dataclass(frozen=True)
+class ResolvedAddress:
+    family: int
+    socket_type: int
+    protocol: int
+    socket_address: tuple
+
+
 def detect_image_format(data):
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "png"
@@ -95,7 +105,134 @@ def validate_local_images(paths):
     return validated
 
 
-def _validate_result_url(url):
+def _deadline_error(deadline_message):
+    error = ApiResponseError(deadline_message or "响应读取超过等待时限。")
+    error.deadline_exceeded = True
+    return error
+
+
+def _run_with_deadline(
+    operation,
+    deadline,
+    deadline_message,
+    monotonic,
+    cancel=None,
+):
+    if deadline is None:
+        return operation()
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise _deadline_error(deadline_message)
+
+    result = queue.Queue(maxsize=1)
+
+    def run():
+        try:
+            result.put((True, operation()))
+        except BaseException as exc:
+            result.put((False, exc))
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    try:
+        succeeded, value = result.get(timeout=remaining)
+    except queue.Empty as exc:
+        if cancel is not None:
+            try:
+                cancel()
+            except Exception:
+                pass
+        raise _deadline_error(deadline_message) from exc
+    if monotonic() >= deadline:
+        if cancel is not None:
+            try:
+                cancel()
+            except Exception:
+                pass
+        raise _deadline_error(deadline_message)
+    if not succeeded:
+        raise value
+    return value
+
+
+def _is_unsafe_address(address):
+    return (
+        not address.is_global
+        or address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_unspecified
+        or address.is_reserved
+    )
+
+
+def _resolve_result_addresses(
+    host,
+    port,
+    *,
+    deadline=None,
+    deadline_message=None,
+    monotonic=None,
+):
+    monotonic = monotonic or time.monotonic
+    try:
+        literal = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        try:
+            resolved = _run_with_deadline(
+                lambda: socket.getaddrinfo(
+                    host, port, type=socket.SOCK_STREAM
+                ),
+                deadline,
+                deadline_message,
+                monotonic,
+            )
+        except ApiResponseError:
+            raise
+        except (OSError, UnicodeError) as exc:
+            raise ApiResponseError("图片下载地址解析失败。") from exc
+        addresses = []
+        for family, socket_type, protocol, _canonical_name, socket_address in resolved:
+            try:
+                parsed_address = ipaddress.ip_address(
+                    socket_address[0].split("%", 1)[0]
+                )
+            except (AttributeError, IndexError, TypeError, ValueError) as exc:
+                raise ApiResponseError("图片下载地址解析失败。") from exc
+            if _is_unsafe_address(parsed_address):
+                raise ApiResponseError("图片下载地址指向不安全的网络地址。")
+            addresses.append(ResolvedAddress(
+                family, socket_type, protocol, socket_address
+            ))
+        if not addresses:
+            raise ApiResponseError("图片下载地址解析失败。")
+        return tuple(dict.fromkeys(addresses))
+
+    if _is_unsafe_address(literal):
+        raise ApiResponseError("图片下载地址指向不安全的网络地址。")
+    if literal.version == 4:
+        return (ResolvedAddress(
+            socket.AF_INET,
+            socket.SOCK_STREAM,
+            socket.IPPROTO_TCP,
+            (str(literal), port),
+        ),)
+    return (ResolvedAddress(
+        socket.AF_INET6,
+        socket.SOCK_STREAM,
+        socket.IPPROTO_TCP,
+        (str(literal), port, 0, 0),
+    ),)
+
+
+def _validate_result_url(
+    url,
+    *,
+    deadline=None,
+    deadline_message=None,
+    monotonic=None,
+):
     if not isinstance(url, str) or not url or any(
         character.isspace()
         or ord(character) < 32
@@ -115,43 +252,23 @@ def _validate_result_url(url):
         or not host
         or parsed.username is not None
         or parsed.password is not None
-        or parsed.fragment
+        or "#" in url
         or port == 0
     ):
         raise ApiResponseError("图片下载地址无效。")
-    port = port or 443
-
     try:
-        literal = ipaddress.ip_address(host)
-    except ValueError:
-        try:
-            resolved = socket.getaddrinfo(
-                host, port, type=socket.SOCK_STREAM
-            )
-        except (OSError, UnicodeError) as exc:
-            raise ApiResponseError("图片下载地址解析失败。") from exc
-        addresses = []
-        for _family, _type, _protocol, _canonical_name, socket_address in resolved:
-            try:
-                addresses.append(ipaddress.ip_address(socket_address[0]))
-            except (IndexError, TypeError, ValueError) as exc:
-                raise ApiResponseError("图片下载地址解析失败。") from exc
-        if not addresses:
-            raise ApiResponseError("图片下载地址解析失败。")
-    else:
-        addresses = [literal]
-
-    if any(
-        not address.is_global
-        or address.is_loopback
-        or address.is_private
-        or address.is_link_local
-        or address.is_multicast
-        or address.is_unspecified
-        or address.is_reserved
-        for address in addresses
-    ):
-        raise ApiResponseError("图片下载地址指向不安全的网络地址。")
+        ascii_host = host.encode("idna").decode("ascii")
+    except (UnicodeError, ValueError) as exc:
+        raise ApiResponseError("图片下载地址无效。") from exc
+    port = port or 443
+    addresses = _resolve_result_addresses(
+        ascii_host,
+        port,
+        deadline=deadline,
+        deadline_message=deadline_message,
+        monotonic=monotonic,
+    )
+    return parsed, ascii_host, port, addresses
 
 
 def download_image(
@@ -162,10 +279,27 @@ def download_image(
     deadline_message=None,
     monotonic=None,
 ):
-    _validate_result_url(url)
+    monotonic = monotonic or time.monotonic
+    parsed, host, port, addresses = _validate_result_url(
+        url,
+        deadline=deadline,
+        deadline_message=deadline_message,
+        monotonic=monotonic,
+    )
+    request_target = urllib.parse.urlunsplit((
+        "", "", parsed.path or "/", parsed.query, ""
+    ))
     try:
-        request = urllib.request.Request(url, method="GET")
-        with _open_result_url(request, timeout) as response:
+        with _open_result_url(
+            host=host,
+            port=port,
+            addresses=addresses,
+            request_target=request_target,
+            timeout=timeout,
+            deadline=deadline,
+            deadline_message=deadline_message,
+            monotonic=monotonic,
+        ) as response:
             status = getattr(response, "status", None)
             if isinstance(status, int) and 300 <= status < 400:
                 raise ApiResponseError("图片下载不允许重定向。")
@@ -328,7 +462,7 @@ def save_image_items(
             if deadline is not None:
                 remaining = deadline - monotonic()
                 if remaining <= 0:
-                    raise ApiResponseError(deadline_message)
+                    raise _deadline_error(deadline_message)
                 item_timeout = min(timeout, remaining)
             data, source_url = _item_bytes(
                 item,
@@ -338,7 +472,7 @@ def save_image_items(
                 monotonic=monotonic,
             )
             if deadline is not None and deadline - monotonic() <= 0:
-                raise ApiResponseError(deadline_message)
+                raise _deadline_error(deadline_message)
             total += len(data)
             if total > MAX_OUTPUT_BYTES:
                 raise ApiResponseError("图片结果总大小超过 256 MiB 限制。")
@@ -440,15 +574,114 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 _AUTHENTICATED_OPENER = urllib.request.build_opener(_NoRedirectHandler())
-_RESULT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
 
 
 def _open_url(request, timeout):
     return _AUTHENTICATED_OPENER.open(request, timeout=timeout)
 
 
-def _open_result_url(request, timeout):
-    return _RESULT_OPENER.open(request, timeout=timeout)
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host, port, address, timeout):
+        super().__init__(host, port=port, timeout=timeout)
+        self._resolved_address = address
+
+    def connect(self):
+        address = self._resolved_address
+        raw_socket = socket.socket(
+            address.family, address.socket_type, address.protocol
+        )
+        try:
+            raw_socket.settimeout(self.timeout)
+            if self.source_address:
+                raw_socket.bind(self.source_address)
+            raw_socket.connect(address.socket_address)
+            try:
+                raw_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+            self.sock = self._context.wrap_socket(
+                raw_socket, server_hostname=self.host
+            )
+        except BaseException:
+            raw_socket.close()
+            raise
+
+
+class _ResultResponseContext:
+    def __init__(self, connection, response):
+        self.connection = connection
+        self.response = response
+
+    def __enter__(self):
+        return self.response
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            self.response.close()
+        finally:
+            self.connection.close()
+        return False
+
+
+def _open_result_url(
+    *,
+    host,
+    port,
+    addresses,
+    request_target,
+    timeout,
+    deadline=None,
+    deadline_message=None,
+    monotonic=None,
+):
+    monotonic = monotonic or time.monotonic
+    cancelled = threading.Event()
+    current = {"connection": None}
+
+    def cancel():
+        cancelled.set()
+        connection = current["connection"]
+        if connection is not None:
+            connection.close()
+
+    def open_approved_address():
+        last_error = None
+        for address in addresses:
+            if cancelled.is_set():
+                raise _deadline_error(deadline_message)
+            connection_timeout = timeout
+            if deadline is not None:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise _deadline_error(deadline_message)
+                connection_timeout = min(timeout, remaining)
+            connection = _PinnedHTTPSConnection(
+                host, port, address, connection_timeout
+            )
+            current["connection"] = connection
+            try:
+                connection.request(
+                    "GET",
+                    request_target,
+                    headers={"Accept-Encoding": "identity", "Connection": "close"},
+                )
+                response = connection.getresponse()
+            except (OSError, UnicodeError, http.client.HTTPException) as exc:
+                connection.close()
+                last_error = exc
+                continue
+            return _ResultResponseContext(connection, response)
+        if last_error is not None:
+            raise last_error
+        raise OSError("no approved result address")
+
+    return _run_with_deadline(
+        open_approved_address,
+        deadline,
+        deadline_message,
+        monotonic,
+        cancel=cancel,
+    )
 
 
 def _content_length(headers):
@@ -462,11 +695,25 @@ def _content_length(headers):
 
 def _check_deadline(deadline, deadline_message, monotonic):
     if deadline is not None and monotonic() >= deadline:
-        error = ApiResponseError(
-            deadline_message or "响应读取超过等待时限。"
-        )
-        error.deadline_exceeded = True
-        raise error
+        raise _deadline_error(deadline_message)
+
+
+def _cancel_stream(stream):
+    try:
+        raw = getattr(getattr(stream, "fp", None), "raw", None)
+        active_socket = getattr(raw, "_sock", None)
+        if active_socket is not None:
+            try:
+                active_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            active_socket.close()
+            return
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
+    except Exception:
+        pass
 
 
 def bounded_read(
@@ -483,30 +730,40 @@ def bounded_read(
     if length is not None and length > limit:
         raise ApiResponseError(f"{label}超过大小限制。")
     monotonic = monotonic or time.monotonic
-    read = getattr(stream, "read1", None) if deadline is not None else None
-    if not callable(read):
-        read = stream.read
-    chunks = []
-    total = 0
-    while True:
-        requested = min(64 * 1024, limit - total + 1)
-        _check_deadline(deadline, deadline_message, monotonic)
-        try:
-            chunk = read(requested)
-        except TypeError as exc:
-            raise ApiResponseError(f"{label}无法按限制读取。") from exc
-        _check_deadline(deadline, deadline_message, monotonic)
-        if not isinstance(chunk, (bytes, bytearray)):
-            raise ApiResponseError(f"{label}读取结果无效。")
-        if len(chunk) > requested or total + len(chunk) > limit:
-            raise ApiResponseError(f"{label}超过大小限制。")
-        if not chunk:
-            return b"".join(chunks)
-        chunks.append(bytes(chunk))
-        total += len(chunk)
+
+    def read_chunks():
+        read = getattr(stream, "read1", None) if deadline is not None else None
+        if not callable(read):
+            read = stream.read
+        chunks = []
+        total = 0
+        while True:
+            requested = min(64 * 1024, limit - total + 1)
+            _check_deadline(deadline, deadline_message, monotonic)
+            try:
+                chunk = read(requested)
+            except TypeError as exc:
+                raise ApiResponseError(f"{label}无法按限制读取。") from exc
+            _check_deadline(deadline, deadline_message, monotonic)
+            if not isinstance(chunk, (bytes, bytearray)):
+                raise ApiResponseError(f"{label}读取结果无效。")
+            if len(chunk) > requested or total + len(chunk) > limit:
+                raise ApiResponseError(f"{label}超过大小限制。")
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(bytes(chunk))
+            total += len(chunk)
+
+    return _run_with_deadline(
+        read_chunks,
+        deadline,
+        deadline_message,
+        monotonic,
+        cancel=lambda: _cancel_stream(stream),
+    )
 
 
-def _open(
+def _open_once(
     request,
     timeout,
     *,
@@ -546,6 +803,29 @@ def _open(
             return ApiResponse(exc.code, headers, body)
         finally:
             exc.close()
+
+
+def _open(
+    request,
+    timeout,
+    *,
+    deadline=None,
+    deadline_message=None,
+    monotonic=None,
+):
+    monotonic = monotonic or time.monotonic
+    return _run_with_deadline(
+        lambda: _open_once(
+            request,
+            timeout,
+            deadline=deadline,
+            deadline_message=deadline_message,
+            monotonic=monotonic,
+        ),
+        deadline,
+        deadline_message,
+        monotonic,
+    )
 
 
 def _validate_authenticated_url(url):
