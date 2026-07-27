@@ -148,6 +148,22 @@ jobs:
               printf '%s %s\n' "$path" "$(sha256sum "$skill_dir/$path" | cut -d ' ' -f 1)"
             done
           }
+          v01_skill_files=(
+            SKILL.md
+            agents/openai.yaml
+            scripts/generate_image.py
+            scripts/setup.py
+            scripts/supertoken_config.py
+          )
+          assert_v01_skill_files() {
+            local skill_dir="$1"
+            local path
+            for path in "${v01_skill_files[@]}"; do
+              test -f "$skill_dir/$path"
+              test "$(sha256sum "$skill_dir/$path" | cut -d ' ' -f 1)" = \
+                "$(git show "v0.1.0:skills/supertoken-gpt-image-2/$path" | sha256sum | cut -d ' ' -f 1)"
+            done
+          }
           assert_github_lock_identity() {
             local lock_path="$1"
             local expected_ref="$2"
@@ -167,14 +183,15 @@ jobs:
           }
           set_github_lock_ref() {
             local lock_path="$1"
-            LOCK_PATH="$lock_path" CANDIDATE_REF="$CANDIDATE_REF" python - <<'PY'
+            local target_ref="$2"
+            LOCK_PATH="$lock_path" TARGET_REF="$target_ref" python - <<'PY'
           import json
           import os
           from pathlib import Path
 
           path = Path(os.environ["LOCK_PATH"])
           lock = json.loads(path.read_text(encoding="utf-8"))
-          target_ref = os.environ["CANDIDATE_REF"] or None
+          target_ref = os.environ["TARGET_REF"] or None
           lock["skills"]["supertoken-gpt-image-2"]["ref"] = target_ref
           path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
           PY
@@ -286,7 +303,11 @@ jobs:
           test ! -e "$upgrade_skill_dir/scripts/supertoken_api.py"
           test ! -e "$upgrade_skill_dir/references/gpt-image-2-api.md"
           assert_github_lock_identity "$upgrade_project/skills-lock.json" "v0.1.0"
-          set_github_lock_ref "$upgrade_project/skills-lock.json"
+          assert_v01_skill_files "$upgrade_skill_dir"
+          npx --yes skills@1.5.19 update -p -y supertoken-gpt-image-2
+          assert_github_lock_identity "$upgrade_project/skills-lock.json" "v0.1.0"
+          assert_v01_skill_files "$upgrade_skill_dir"
+          set_github_lock_ref "$upgrade_project/skills-lock.json" "$CANDIDATE_REF"
           assert_github_lock_identity "$upgrade_project/skills-lock.json" "$CANDIDATE_REF"
           npx --yes skills@1.5.19 update -p -y supertoken-gpt-image-2
           assert_github_lock_identity "$upgrade_project/skills-lock.json" "$CANDIDATE_REF"
@@ -294,6 +315,7 @@ jobs:
             > "$RUNNER_TEMP/upgraded-skill-files.sha256"
           diff -u "$RUNNER_TEMP/candidate-skill-files.sha256" "$RUNNER_TEMP/upgraded-skill-files.sha256"
           smoke_upgraded_cli "$upgrade_skill_dir"
+          v01_global_commit="$(git rev-parse 'v0.1.0^{commit}')"
           v01_global_home="$RUNNER_TEMP/v01-global-home"
           v01_global_project="$RUNNER_TEMP/v01-global-project"
           mkdir -p "$v01_global_home" "$v01_global_project"
@@ -325,7 +347,15 @@ jobs:
           test "$(realpath "$global_claude_dir")" = "$global_upgrade_skill_dir"
           global_lock="$v01_global_home/.agents/.skill-lock.json"
           assert_github_lock_identity "$global_lock" "v0.1.0"
-          set_github_lock_ref "$global_lock"
+          assert_v01_skill_files "$global_upgrade_skill_dir"
+          set_github_lock_ref "$global_lock" "$v01_global_commit"
+          assert_github_lock_identity "$global_lock" "$v01_global_commit"
+          HOME="$v01_global_home" npx --yes skills@1.5.19 update -g -y \
+            supertoken-gpt-image-2
+          assert_github_lock_identity "$global_lock" "$v01_global_commit"
+          assert_v01_skill_files "$global_upgrade_skill_dir"
+          test "$(realpath "$global_claude_dir")" = "$global_upgrade_skill_dir"
+          set_github_lock_ref "$global_lock" "$CANDIDATE_REF"
           assert_github_lock_identity "$global_lock" "$CANDIDATE_REF"
           HOME="$v01_global_home" npx --yes skills@1.5.19 update -g -y \
             supertoken-gpt-image-2
