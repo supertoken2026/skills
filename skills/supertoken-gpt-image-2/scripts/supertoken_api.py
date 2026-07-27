@@ -33,6 +33,115 @@ class ApiResponseError(RuntimeError):
     pass
 
 
+MAX_IMAGES = 10
+MAX_FILE_BYTES = 20 * 1024 * 1024
+MAX_MULTIPART_BYTES = 100 * 1024 * 1024
+FORMAT_SUFFIX = {"png": ".png", "jpeg": ".jpeg", "webp": ".webp"}
+
+
+@dataclass(frozen=True)
+class ValidatedImage:
+    path: Path
+    format: str
+    size: int
+
+
+@dataclass(frozen=True)
+class SavedImage:
+    path: Path
+    bytes_written: int
+    format: str
+    source_url: str | None
+
+
+def detect_image_format(data):
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "webp"
+    raise ApiUsageError("图片格式必须是 PNG、JPEG 或 WebP。")
+
+
+def validate_local_images(paths):
+    if not paths or len(paths) > MAX_IMAGES:
+        raise ApiUsageError("参考图片最多 10 张，且至少需要 1 张。")
+    validated = []
+    total = 0
+    for raw_path in paths:
+        path = Path(raw_path).expanduser()
+        if not path.is_file():
+            raise ApiUsageError(f"图片文件不存在：{path}。")
+        size = path.stat().st_size
+        if size > MAX_FILE_BYTES:
+            raise ApiUsageError(f"单个图片文件不能超过 20 MiB：{path}。")
+        total += size
+        if total > MAX_MULTIPART_BYTES:
+            raise ApiUsageError("multipart 文件总量不能超过 100 MiB。")
+        with path.open("rb") as stream:
+            image_format = detect_image_format(stream.read(12))
+        validated.append(ValidatedImage(path.resolve(), image_format, size))
+    return validated
+
+
+def download_image(url, timeout):
+    if urllib.parse.urlparse(url).scheme != "https":
+        raise ApiResponseError("图片下载地址必须使用 HTTPS。")
+    request = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        if urllib.parse.urlparse(response.geturl()).scheme != "https":
+            raise ApiResponseError("图片下载重定向后的地址必须使用 HTTPS。")
+        return response.read()
+
+
+def _item_bytes(item, timeout):
+    if item.get("b64_json"):
+        try:
+            return base64.b64decode(item["b64_json"], validate=True), None
+        except (binascii.Error, ValueError) as exc:
+            raise ApiResponseError("图片响应中的 Base64 无效。") from exc
+    if item.get("url"):
+        return download_image(item["url"], timeout), item["url"]
+    raise ApiResponseError("图片响应中没有 url 或 b64_json。")
+
+
+def _final_output_path(requested, index, count, image_format):
+    requested = Path(requested).expanduser()
+    suffix = FORMAT_SUFFIX[image_format]
+    stem = requested.stem
+    if count > 1:
+        stem = f"{stem}-{index + 1}"
+    return requested.with_name(stem + suffix).resolve()
+
+
+def save_image_items(items, output_path, timeout):
+    if not isinstance(items, list) or not items:
+        raise ApiResponseError("图片响应中没有有效的结果。")
+    saved = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ApiResponseError("图片响应项不是对象。")
+        data, source_url = _item_bytes(item, timeout)
+        try:
+            image_format = detect_image_format(data)
+        except ApiUsageError as exc:
+            raise ApiResponseError("图片响应不是可识别的 PNG、JPEG 或 WebP。") from exc
+        final = _final_output_path(output_path, index, len(items), image_format)
+        final.parent.mkdir(parents=True, exist_ok=True)
+        part = Path(f"{final}.part")
+        part.unlink(missing_ok=True)
+        try:
+            part.write_bytes(data)
+            if part.stat().st_size == 0:
+                raise ApiResponseError("图片结果为空。")
+            part.replace(final)
+        finally:
+            part.unlink(missing_ok=True)
+        saved.append(SavedImage(final, len(data), image_format, source_url))
+    return saved
+
+
 def endpoint_url(base_url, route):
     base = base_url.rstrip("/")
     if not route.startswith("/v1/"):
@@ -84,7 +193,10 @@ def _open(request, timeout):
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return ApiResponse(response.status, dict(response.headers), response.read())
     except urllib.error.HTTPError as exc:
-        return ApiResponse(exc.code, dict(exc.headers), exc.read())
+        try:
+            return ApiResponse(exc.code, dict(exc.headers), exc.read())
+        finally:
+            exc.close()
 
 
 def request_json(method, url, api_key, timeout, payload=None, headers=None):
