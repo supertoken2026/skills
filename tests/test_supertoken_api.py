@@ -129,6 +129,16 @@ class HttpErrorTests(unittest.TestCase):
         self.assertIn("HTTP 503", text)
         self.assertIn("请求 ID：request-123", text)
 
+    def test_all_5xx_errors_are_temporary_and_include_request_id(self):
+        for status in (500, 504):
+            with self.subTest(status=status):
+                text = api.classify_http_error(
+                    status, {"X-Request-Id": "request-123"}, "model"
+                )
+
+                self.assertIn(f"图片服务暂时不可用（HTTP {status}）", text)
+                self.assertIn("请求 ID：request-123", text)
+
     def test_unclassified_status_uses_generic_message(self):
         self.assertEqual(
             api.classify_http_error(418, {}, "model"),
