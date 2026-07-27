@@ -6,6 +6,8 @@ import sys
 from supertoken_config import (
     DEFAULT_BASE_URL,
     ConfigError,
+    MODEL_KEY,
+    RESOURCE_KEY,
     build_config,
     config_path,
     save_api_key,
@@ -21,6 +23,7 @@ class ChineseArgumentParser(argparse.ArgumentParser):
 def parse_args(argv=None):
     parser = ChineseArgumentParser(description="配置 SuperToken GPT Image 2。")
     parser.add_argument("--api-key", help="SuperToken API Key；未提供时会安全提示输入。")
+    parser.add_argument("--resource-api-key", help="SuperToken Resource API Key。")
     parser.add_argument(
         "--base-url",
         default=DEFAULT_BASE_URL,
@@ -43,17 +46,23 @@ def main(argv=None):
 
     try:
         value = build_config(base_url=args.base_url)
-        backend = save_api_key(
-            api_key,
-            allow_plaintext=args.allow_plaintext_key_store,
-        )
+        backend = save_api_key(api_key, args.allow_plaintext_key_store, MODEL_KEY)
+        resource_backend = None
+        if args.resource_api_key:
+            resource_backend = save_api_key(
+                args.resource_api_key,
+                args.allow_plaintext_key_store,
+                RESOURCE_KEY,
+            )
         save_config(value)
     except ConfigError as exc:
         print(str(exc), file=sys.stderr)
         return 2
 
     print(f"配置已保存到：{config_path()}")
-    print(f"API Key 已保存到：{backend}")
+    print(f"模型 API Key 已保存到：{backend}")
+    if resource_backend:
+        print(f"资源 API Key 已保存到：{resource_backend}")
     print("默认模型：gpt-image-2-count")
     return 0
 
