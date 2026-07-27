@@ -85,6 +85,72 @@ class DistributionWorkflowTests(unittest.TestCase):
         self.assertIn('global-upgraded-skill-files.sha256', text)
         self.assertIn('test -L "$global_claude_dir"', text)
 
+    def test_ordinary_updates_preserve_pinned_tag_and_commit_installs(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("v01_skill_files=(", text)
+        self.assertIn("assert_v01_skill_files()", text)
+        self.assertIn('git show "v0.1.0:skills/supertoken-gpt-image-2/$path"', text)
+
+        project_start = text.index('npx --yes skills@1.5.19 add "supertoken2026/skills#v0.1.0"')
+        project_retarget = text.index(
+            'set_github_lock_ref "$upgrade_project/skills-lock.json"', project_start
+        )
+        project_pinned_update = text.index(
+            'npx --yes skills@1.5.19 update -p -y supertoken-gpt-image-2',
+            project_start,
+        )
+        self.assertLess(project_pinned_update, project_retarget)
+        self.assertIn(
+            'assert_github_lock_identity "$upgrade_project/skills-lock.json" "v0.1.0"',
+            text[project_start:project_retarget],
+        )
+        self.assertGreaterEqual(
+            text[project_start:project_retarget].count(
+                'assert_v01_skill_files "$upgrade_skill_dir"'
+            ),
+            2,
+        )
+
+        commit_resolution = "v01_global_commit=\"$(git rev-parse 'v0.1.0^{commit}')\""
+        self.assertIn(commit_resolution, text)
+        global_start = text.index(commit_resolution)
+        global_install = text.index('"supertoken2026/skills#v0.1.0"', global_start)
+        global_commit_pin = text.index(
+            'set_github_lock_ref "$global_lock" "$v01_global_commit"', global_install
+        )
+        global_retarget = text.index(
+            'set_github_lock_ref "$global_lock" "$CANDIDATE_REF"', global_commit_pin
+        )
+        global_pinned_update = text.index(
+            'HOME="$v01_global_home" npx --yes skills@1.5.19 update -g -y \\\n            supertoken-gpt-image-2',
+            global_commit_pin,
+        )
+        self.assertNotIn('"supertoken2026/skills#$v01_global_commit"', text)
+        self.assertLess(global_install, global_commit_pin)
+        self.assertLess(global_commit_pin, global_pinned_update)
+        self.assertLess(global_pinned_update, global_retarget)
+        self.assertIn(
+            'assert_github_lock_identity "$global_lock" "v0.1.0"',
+            text[global_install:global_commit_pin],
+        )
+        self.assertIn(
+            'assert_v01_skill_files "$global_upgrade_skill_dir"',
+            text[global_install:global_commit_pin],
+        )
+        self.assertIn(
+            'assert_github_lock_identity "$global_lock" "$v01_global_commit"',
+            text[global_commit_pin:global_retarget],
+        )
+        self.assertIn(
+            'assert_v01_skill_files "$global_upgrade_skill_dir"',
+            text[global_pinned_update:global_retarget],
+        )
+        self.assertIn(
+            'test "$(realpath "$global_claude_dir")" = "$global_upgrade_skill_dir"',
+            text[global_commit_pin:global_retarget],
+        )
+
     def test_ubuntu_hash_helper_precedes_and_verifies_fresh_installs(self):
         text = WORKFLOW.read_text(encoding="utf-8")
         distribution = text[text.index("  distribution:"):]
@@ -109,7 +175,8 @@ class DistributionWorkflowTests(unittest.TestCase):
             "github.event.pull_request.head.sha || '' }}",
             text,
         )
-        self.assertIn('target_ref = os.environ["CANDIDATE_REF"] or None', text)
+        self.assertIn('target_ref = os.environ["TARGET_REF"] or None', text)
+        self.assertIn('local target_ref="$2"', text)
         self.assertIn('assert entry["source"] == "supertoken2026/skills", entry', text)
         self.assertIn('assert entry["sourceType"] == "github", entry', text)
         self.assertIn(
