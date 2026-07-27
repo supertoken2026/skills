@@ -570,6 +570,32 @@ class SyncEditTests(unittest.TestCase):
         json_request.assert_not_called()
         multipart_request.assert_not_called()
 
+    def test_oversized_base64_file_uses_one_bounded_read(self):
+        prefix_bytes = len(b"data:image/jpeg;base64,")
+        encoded_limit = 4 * ((api.MAX_FILE_BYTES + 2) // 3) + prefix_bytes
+        read_sizes = []
+
+        class OversizedReader:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def read(self, size=-1):
+                read_sizes.append(size)
+                if size < 0:
+                    return "A"
+                return b"A" * size
+
+        with patch.object(Path, "open", return_value=OversizedReader()):
+            with self.assertRaisesRegex(api.ApiUsageError, "20 MiB"):
+                cli.classify_edit_inputs(
+                    [], ["oversized-base64.txt"], None, False,
+                )
+
+        self.assertEqual(read_sizes, [encoded_limit + 1])
+
     def test_async_base64_is_rejected_by_the_shared_classifier(self):
         encoded = base64.b64encode(PNG_BYTES).decode("ascii")
 

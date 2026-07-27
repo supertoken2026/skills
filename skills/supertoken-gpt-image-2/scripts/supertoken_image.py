@@ -33,6 +33,12 @@ from supertoken_config import (
 )
 
 
+MAX_BASE64_FILE_BYTES = (
+    4 * ((api.MAX_FILE_BYTES + 2) // 3)
+    + len(b"data:image/jpeg;base64,")
+)
+
+
 def add_image_options(parser, include_images=False):
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--output")
@@ -292,7 +298,13 @@ def classify_edit_inputs(image_values, base64_files, mask_value, async_mode):
     for raw_path in base64_files:
         path = Path(raw_path).expanduser()
         try:
-            encoded = path.read_text(encoding="utf-8").strip()
+            with path.open("rb") as stream:
+                raw_encoded = stream.read(MAX_BASE64_FILE_BYTES + 1)
+            if len(raw_encoded) > MAX_BASE64_FILE_BYTES:
+                raise api.ApiUsageError(
+                    "Base64 图片文件不能超过 20 MiB 图片的编码上限。"
+                )
+            encoded = raw_encoded.decode("utf-8").strip()
             if encoded.startswith("data:image/") and ";base64," in encoded:
                 encoded = encoded.split(";base64,", 1)[1]
             append_base64(encoded)
@@ -521,12 +533,15 @@ def run_sync_edit(args, base_url, api_key, inputs):
     endpoint = api.endpoint_url(base_url, "/v1/images/edits")
     if inputs.kind == "local":
         files = [
-            api.MultipartFile("image", item.path, f"image/{item.format}")
+            api.MultipartFile(
+                "image", item.path, f"image/{item.format}", item.data,
+            )
             for item in inputs.values
         ]
         if inputs.mask:
             files.append(api.MultipartFile(
                 "mask", inputs.mask.path, f"image/{inputs.mask.format}",
+                inputs.mask.data,
             ))
         response = api.request_multipart(
             "POST", endpoint, api_key, args.timeout, list(payload.items()), files,
@@ -817,12 +832,15 @@ def _multipart_async_edit(args, inputs):
     if args.metadata is not None:
         fields.append(("metadata", json.dumps(args.metadata, ensure_ascii=False)))
     files = [
-        api.MultipartFile("image", item.path, f"image/{item.format}")
+        api.MultipartFile(
+            "image", item.path, f"image/{item.format}", item.data,
+        )
         for item in inputs.values
     ]
     if inputs.mask:
         files.append(api.MultipartFile(
-            "mask", inputs.mask.path, f"image/{inputs.mask.format}"
+            "mask", inputs.mask.path, f"image/{inputs.mask.format}",
+            inputs.mask.data,
         ))
     return fields, files
 
