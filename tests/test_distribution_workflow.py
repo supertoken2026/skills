@@ -112,7 +112,10 @@ class DistributionWorkflowTests(unittest.TestCase):
             2,
         )
 
-        commit_resolution = "v01_global_commit=\"$(git rev-parse 'v0.1.0^{commit}')\""
+        commit_resolution = (
+            'v01_global_commit="$(git -C "$GITHUB_WORKSPACE" '
+            "rev-parse 'v0.1.0^{commit}')\""
+        )
         self.assertIn(commit_resolution, text)
         self.assertLess(
             text.index(commit_resolution),
