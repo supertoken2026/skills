@@ -286,7 +286,7 @@ def classify_http_error(status, headers, key_kind, model=None):
         return "图片文件或 multipart 请求总大小超过限制。"
     if status == 429:
         return "请求频率或账户额度受限。"
-    if status in {502, 503}:
+    if 500 <= status <= 599:
         identifier = request_id(headers)
         suffix = f" 请求 ID：{identifier}。" if identifier else ""
         return f"SuperToken 图片服务暂时不可用（HTTP {status}）。{suffix}".strip()
