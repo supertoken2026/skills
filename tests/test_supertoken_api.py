@@ -258,6 +258,28 @@ class RequestTests(unittest.TestCase):
         self.assertTrue(error.fp.closed)
         self.assertEqual(urlopen.call_count, 1)
 
+    def test_http_error_without_headers_uses_an_empty_header_mapping(self):
+        error = urllib.error.HTTPError(
+            "https://api.example.test/v1/images/generations",
+            500,
+            "Service Unavailable",
+            None,
+            io.BytesIO(b'{"error": "temporary"}'),
+        )
+        with patch.object(api.urllib.request, "urlopen", side_effect=error):
+            response = api.request_json(
+                "POST",
+                "https://api.example.test/v1/images/generations",
+                "test-api-key",
+                30,
+                {"model": "gpt-image-2"},
+            )
+
+        self.assertEqual(response.status, 500)
+        self.assertEqual(response.headers, {})
+        self.assertEqual(response.body, b'{"error": "temporary"}')
+        self.assertTrue(error.fp.closed)
+
     def test_url_error_propagates_without_retry(self):
         with patch.object(
             api.urllib.request,

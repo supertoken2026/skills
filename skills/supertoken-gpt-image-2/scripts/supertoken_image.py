@@ -27,6 +27,7 @@ from supertoken_config import (
     load_config,
     save_api_key,
     save_config,
+    validate_api_key,
 )
 
 
@@ -349,10 +350,14 @@ def output_rows(saved):
 def resolve_runtime(args, key_kind=MODEL_KEY):
     current = load_config()
     base_url = (args.base_url or current.get("base_url") or DEFAULT_BASE_URL).rstrip("/")
-    key = (
+    explicit_key = (
         getattr(args, "api_key", None) if key_kind == MODEL_KEY
         else getattr(args, "resource_api_key", None)
-    ) or get_api_key(key_kind)
+    )
+    key = (
+        validate_api_key(explicit_key, key_kind)
+        if explicit_key else get_api_key(key_kind)
+    )
     if (
         not key
         and key_kind == MODEL_KEY
