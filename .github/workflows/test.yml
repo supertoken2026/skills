@@ -280,6 +280,7 @@ jobs:
               test "$(realpath "$claude_dir")" = "$skill_dir"
             fi
           done
+          v01_global_commit="$(git rev-parse 'v0.1.0^{commit}')"
           upgrade_project="$RUNNER_TEMP/v01-upgrade-project"
           mkdir -p "$upgrade_project"
           cd "$upgrade_project"
@@ -315,7 +316,6 @@ jobs:
             > "$RUNNER_TEMP/upgraded-skill-files.sha256"
           diff -u "$RUNNER_TEMP/candidate-skill-files.sha256" "$RUNNER_TEMP/upgraded-skill-files.sha256"
           smoke_upgraded_cli "$upgrade_skill_dir"
-          v01_global_commit="$(git rev-parse 'v0.1.0^{commit}')"
           v01_global_home="$RUNNER_TEMP/v01-global-home"
           v01_global_project="$RUNNER_TEMP/v01-global-project"
           mkdir -p "$v01_global_home" "$v01_global_project"
