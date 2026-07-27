@@ -310,14 +310,24 @@ class SupertokenConfigTests(unittest.TestCase):
 
 
 class LegacyGeneratorCompatibilityTests(unittest.TestCase):
-    def test_main_prefixes_legacy_arguments_with_generate(self):
+    def test_main_uses_legacy_timeout_when_omitted(self):
         with patch.object(generator, "image_main", return_value=0) as image_main:
             code = generator.main(["--prompt", "cat", "--output", "cat.png"])
 
         self.assertEqual(code, 0)
         image_main.assert_called_once_with(
-            ["generate", "--prompt", "cat", "--output", "cat.png"]
+            ["generate", "--prompt", "cat", "--output", "cat.png", "--timeout", "180"]
         )
+
+    def test_main_preserves_explicit_legacy_timeout(self):
+        for timeout_args in (["--timeout", "45"], ["--timeout=60"]):
+            with self.subTest(timeout_args=timeout_args):
+                arguments = ["--prompt", "cat", "--output", "cat.png", *timeout_args]
+                with patch.object(generator, "image_main", return_value=0) as image_main:
+                    code = generator.main(arguments)
+
+                self.assertEqual(code, 0)
+                image_main.assert_called_once_with(["generate", *arguments])
 
 
 class SupertokenSetupTests(unittest.TestCase):
