@@ -75,6 +75,37 @@ class ParserTests(unittest.TestCase):
                     self.assertEqual(code, 2)
             request_json.assert_not_called()
 
+    def test_mode_specific_options_are_rejected_before_requests(self):
+        sync_base = [
+            "generate", "--prompt", "cat", "--output", "unused.png",
+        ]
+        async_base = ["generate", "--prompt", "cat", "--async"]
+        cases = [
+            [*sync_base, "--idempotency-key", "request-key"],
+            [*sync_base, "--output-compression", "50"],
+            [*sync_base, "--client-reference-id", "client-1"],
+            [*sync_base, "--metadata-json", "{}"],
+            [*sync_base, "--resource-api-key", "custom-resource-key"],
+            [*sync_base, "--wait-timeout", "900"],
+            [*async_base, "--param", "style=vivid"],
+            [*async_base, "--json-params", "unused.json"],
+            [*async_base, "--raw-json", "unused.json"],
+            [*async_base, "--resource-api-key", "unused-resource-key"],
+            [*async_base, "--wait-timeout", "900"],
+        ]
+        unexpected = api_response({"id": "task_unexpected", "status": "queued"})
+        environment = {config.API_KEY_ENV: "test-key"}
+        with patch.object(
+            cli.api, "request_json", return_value=unexpected,
+        ) as json_request:
+            with patch.object(cli.api, "request_multipart") as multipart_request:
+                for argv in cases:
+                    with self.subTest(argv=argv):
+                        code, _stdout, _stderr = run_cli(argv, environment)
+                        self.assertEqual(code, 2)
+                json_request.assert_not_called()
+                multipart_request.assert_not_called()
+
 
 class ModelListingTests(unittest.TestCase):
     def test_explicit_base_url_refreshes_existing_config_without_losing_model(self):
@@ -253,16 +284,35 @@ class SyncGenerationTests(unittest.TestCase):
                             "path": str(Path(temp_dir, "output-1.png").resolve()),
                             "bytes": len(PNG_BYTES),
                             "format": "png",
-                            "source_url": None,
                         },
                         {
                             "path": str(Path(temp_dir, "output-2.png").resolve()),
                             "bytes": len(PNG_BYTES),
                             "format": "png",
-                            "source_url": None,
                         },
                     ],
                 },
+            )
+
+    def test_signed_result_url_is_not_reported(self):
+        signed_url = "https://cdn.example.test/image.png?token=secret-signed-value"
+        response = api_response({"data": [{"url": signed_url}]})
+        environment = {config.API_KEY_ENV: "test-key"}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "output.png"
+            with patch.object(cli.api, "request_json", return_value=response):
+                with patch.object(cli.api, "download_image", return_value=PNG_BYTES):
+                    code, stdout, stderr = run_cli([
+                        "generate", "--prompt", "cat", "--output", str(output),
+                    ], environment)
+
+            self.assertEqual(code, 0, stderr)
+            self.assertNotIn(signed_url, stdout)
+            self.assertNotIn("secret-signed-value", stdout)
+            self.assertNotIn("secret-signed-value", stderr)
+            self.assertEqual(
+                set(json.loads(stdout)["outputs"][0]),
+                {"path", "bytes", "format"},
             )
 
     def test_count_model_rejects_multiple_images_before_request(self):
@@ -779,6 +829,21 @@ class AsyncTaskTests(unittest.TestCase):
             call.args[0] != cli.RESOURCE_KEY for call in get_key.call_args_list
         ))
 
+    def test_create_rejects_malformed_task_id_without_reporting_it(self):
+        malformed_id = "bad/sk-model123456"
+        response = api_response({"id": malformed_id, "status": "queued"}, 202)
+        with patch.object(cli.api, "request_json", return_value=response) as request:
+            code, stdout, stderr = run_cli([
+                "generate", "--async", "--prompt", "cat",
+                "--idempotency-key", "request-key",
+            ], {config.API_KEY_ENV: "model-key"})
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(request.call_count, 1)
+        self.assertIn("任务 ID", stderr)
+        self.assertNotIn(malformed_id, stderr)
+
     def test_provided_empty_idempotency_key_is_not_replaced(self):
         response = api_response({"id": "task_empty_key", "status": "queued"}, 202)
         with patch.object(cli.uuid, "uuid4", side_effect=AssertionError("uuid")):
@@ -870,6 +935,7 @@ class AsyncTaskTests(unittest.TestCase):
 
     def test_task_failed_redacts_server_supplied_credentials(self):
         error = cli.TaskFailed(
+            "task_failed",
             {
                 "id": "task_failed",
                 "error": {
@@ -893,6 +959,79 @@ class AsyncTaskTests(unittest.TestCase):
             self.assertNotIn(secret, text)
         self.assertIn("blocked", text)
         self.assertIn("retryable=True", text)
+
+    def test_failed_task_uses_requested_id_and_redacts_every_error_field(self):
+        secrets = (
+            "sk-model123456",
+            "ak_resource123456",
+            "wk-webhook123456",
+            "explicit-resource-secret",
+        )
+        task = {
+            "id": secrets[0],
+            "status": "failed",
+            "error": {
+                "code": secrets[1],
+                "message": secrets[2],
+                "retryable": secrets[3],
+            },
+        }
+        with patch.object(cli, "query_task", return_value=(task, {})):
+            with self.assertRaises(api.ApiResponseError) as raised:
+                cli.poll_task(
+                    "https://api.example", secrets[3], "task_requested", 5, 100,
+                    sleep=lambda _seconds: None, monotonic=lambda: 0,
+                )
+
+        text = str(raised.exception)
+        self.assertIn("task_requested", text)
+        for secret in secrets:
+            self.assertNotIn(secret, text)
+
+    def test_failed_task_with_non_object_error_is_controlled(self):
+        task = {"id": "task_server", "status": "failed", "error": ["bad"]}
+        with patch.object(cli, "query_task", return_value=(task, {})):
+            with self.assertRaisesRegex(api.ApiResponseError, "task_requested"):
+                cli.poll_task(
+                    "https://api.example", "resource-key", "task_requested", 5, 100,
+                    sleep=lambda _seconds: None, monotonic=lambda: 0,
+                )
+
+    def test_wait_rejects_non_object_result_without_a_traceback(self):
+        response = api_response({
+            "id": "task_requested", "status": "succeeded", "result": [],
+        })
+        with patch.object(cli.api, "request_json", return_value=response) as request:
+            code, _stdout, stderr = run_cli([
+                "wait", "task_requested", "--output", "unused.png",
+            ], {config.RESOURCE_API_KEY_ENV: "resource-key"})
+
+        self.assertEqual(code, 1)
+        self.assertEqual(request.call_count, 1)
+        self.assertIn("task_requested", stderr)
+        self.assertNotIn("Traceback", stderr)
+
+    def test_wait_uses_requested_id_in_success_output(self):
+        server_id = "task_server_secret"
+        response = api_response({
+            "id": server_id,
+            "status": "succeeded",
+            "result": {
+                "images": [{
+                    "b64_json": base64.b64encode(PNG_BYTES).decode("ascii"),
+                }],
+            },
+        })
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "result.png"
+            with patch.object(cli.api, "request_json", return_value=response):
+                code, stdout, stderr = run_cli([
+                    "wait", "task_requested", "--output", str(output),
+                ], {config.RESOURCE_API_KEY_ENV: "resource-key"})
+
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout)["task_id"], "task_requested")
+        self.assertNotIn(server_id, stdout)
 
     def test_wait_reports_failed_task_without_resubmitting(self):
         failed = api_response({
