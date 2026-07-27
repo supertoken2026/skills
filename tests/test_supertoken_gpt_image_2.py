@@ -215,6 +215,31 @@ class SupertokenConfigTests(unittest.TestCase):
             self.assertEqual(list(config_dir.glob(".credentials.json.*")), [])
             self.assertFalse((config_dir / "credentials.json").exists())
 
+    @unittest.skipUnless(os.name == "posix", "POSIX descriptor ownership")
+    def test_plaintext_fchmod_failure_closes_unowned_descriptor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "config"
+            environment = {
+                config.CONFIG_DIR_ENV: str(config_dir),
+                config.DISABLE_SECURE_STORE_ENV: "1",
+            }
+            closed = []
+            real_close = config.os.close
+
+            def record_close(descriptor):
+                closed.append(descriptor)
+                return real_close(descriptor)
+
+            with patch.dict(os.environ, environment, clear=False):
+                with patch.object(config.os, "fchmod", side_effect=OSError("mode failed")):
+                    with patch.object(config.os, "close", side_effect=record_close):
+                        with self.assertRaisesRegex(OSError, "mode failed"):
+                            config.save_api_key("model-secret", allow_plaintext=True)
+
+            self.assertEqual(len(closed), 1)
+            self.assertEqual(list(config_dir.glob(".credentials.json.*")), [])
+            self.assertFalse((config_dir / "credentials.json").exists())
+
     @unittest.skipUnless(os.name == "posix", "POSIX replace behavior")
     def test_plaintext_replace_failure_cleans_temp_without_exposing_key(self):
         secret = "model-secret"
