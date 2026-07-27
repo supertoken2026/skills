@@ -161,7 +161,7 @@ jobs:
             for path in "${v01_skill_files[@]}"; do
               test -f "$skill_dir/$path"
               test "$(sha256sum "$skill_dir/$path" | cut -d ' ' -f 1)" = \
-                "$(git show "v0.1.0:skills/supertoken-gpt-image-2/$path" | sha256sum | cut -d ' ' -f 1)"
+                "$(git -C "$GITHUB_WORKSPACE" show "v0.1.0:skills/supertoken-gpt-image-2/$path" | sha256sum | cut -d ' ' -f 1)"
             done
           }
           assert_github_lock_identity() {
