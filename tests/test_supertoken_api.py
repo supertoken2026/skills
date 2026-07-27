@@ -348,7 +348,14 @@ class ImageValidationAndOutputTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             output = Path(temp_dir) / "result.png"
             item = {"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}
-            with patch.object(Path, "stat", return_value=MagicMock(st_size=0)):
+
+            def write_empty(path, _data):
+                path.touch()
+                return 0
+
+            with patch.object(
+                Path, "write_bytes", autospec=True, side_effect=write_empty,
+            ):
                 with self.assertRaisesRegex(api.ApiResponseError, "为空"):
                     api.save_image_items([item], output, 5)
 
