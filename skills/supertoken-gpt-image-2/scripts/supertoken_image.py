@@ -302,7 +302,7 @@ def classify_edit_inputs(image_values, base64_files, mask_value, async_mode):
                 raw_encoded = stream.read(MAX_BASE64_FILE_BYTES + 1)
             if len(raw_encoded) > MAX_BASE64_FILE_BYTES:
                 raise api.ApiUsageError(
-                    "Base64 图片文件不能超过 20 MiB 图片的编码上限。"
+                    "Base64 图片文件的编码大小超过上限（对应解码后 20 MiB）。"
                 )
             encoded = raw_encoded.decode("utf-8").strip()
             if encoded.startswith("data:image/") and ";base64," in encoded:
