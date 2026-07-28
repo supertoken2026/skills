@@ -5,8 +5,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "test.yml"
 README = ROOT / "README.md"
+README_EN = ROOT / "README.en.md"
 PUBLIC_DOCS = (
     README,
+    README_EN,
     ROOT / "skills" / "supertoken-gpt-image-2" / "SKILL.md",
     ROOT / "skills" / "supertoken-gpt-image-2" / "references"
     / "gpt-image-2-api.md",
@@ -24,12 +26,37 @@ REQUIRED_SKILL_FILES = (
 
 
 class DistributionWorkflowTests(unittest.TestCase):
+    def test_root_readmes_link_to_each_other_and_keep_quick_start_near_top(self):
+        chinese = README.read_text(encoding="utf-8")
+        english = README_EN.read_text(encoding="utf-8")
+
+        self.assertIn("[English](README.en.md)", chinese)
+        self.assertIn("[中文](README.md)", english)
+        self.assertIn("## 快速开始", "\n".join(chinese.splitlines()[:60]))
+        self.assertIn(
+            "npx --yes skills@1.5.19 add", "\n".join(chinese.splitlines()[:60])
+        )
+
     def test_wait_deadline_documentation_includes_result_downloads(self):
-        for path in PUBLIC_DOCS:
+        self.assertIn("结果下载", README.read_text(encoding="utf-8"))
+        self.assertIn("result downloads", README_EN.read_text(encoding="utf-8").lower())
+        for path in PUBLIC_DOCS[2:]:
             with self.subTest(path=path):
                 text = path.read_text(encoding="utf-8")
                 self.assertIn("结果下载", text)
                 self.assertIn("result downloads", text.lower())
+
+    def test_root_readmes_keep_essential_gpt_image_2_safety_notes(self):
+        for path in (README, README_EN):
+            with self.subTest(path=path):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("SUPERTOKEN_API_KEY", text)
+                self.assertIn("SUPERTOKEN_RESOURCE_API_KEY", text)
+                self.assertIn("gpt-image-2-count", text)
+                self.assertIn("gpt-image-2", text)
+                self.assertIn("POST", text)
+                self.assertIn("Webhook", text)
+                self.assertIn("Base64", text)
 
     def test_api_reference_describes_redacted_idempotency_output(self):
         text = PUBLIC_DOCS[-1].read_text(encoding="utf-8")
@@ -240,21 +267,24 @@ class DistributionWorkflowTests(unittest.TestCase):
             self.assertIn(path, hash_function)
 
     def test_upgrade_docs_distinguish_tracking_and_pinned_refs(self):
-        text = README.read_text(encoding="utf-8")
+        chinese = README.read_text(encoding="utf-8")
+        english = README_EN.read_text(encoding="utf-8")
 
-        self.assertIn("从默认分支安装", text)
-        self.assertIn("未指定 `#ref`", text)
-        self.assertIn("可以正常更新", text)
-        self.assertIn("`#v0.1.0`", text)
-        self.assertIn("固定在该 ref", text)
-        self.assertIn("installed from the default branch", text)
-        self.assertIn("unversioned", text.lower())
-        self.assertIn("update normally", text)
-        self.assertIn("remains pinned to that ref", text)
+        self.assertIn("从默认分支安装", chinese)
+        self.assertIn("未指定 `#ref`", chinese)
+        self.assertIn("可以正常更新", chinese)
+        self.assertIn("`#v0.1.0`", chinese)
+        self.assertIn("固定在该 ref", chinese)
+        self.assertIn("installed from the default branch", english)
+        self.assertIn("unversioned", english.lower())
+        self.assertIn("update normally", english)
+        self.assertIn("remains pinned to that ref", english)
 
     def test_readme_skills_cli_commands_use_the_pinned_version(self):
         commands = [
-            line for line in README.read_text(encoding="utf-8").splitlines()
+            line
+            for path in (README, README_EN)
+            for line in path.read_text(encoding="utf-8").splitlines()
             if line.startswith("npx ")
         ]
 
