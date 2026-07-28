@@ -99,6 +99,15 @@ python3 scripts/supertoken_image.py wait TASK_ID \
 - `gpt-image-2-count` 是默认模型；当 `n > 1` 或需要完整 Images API 参数时，使用 `gpt-image-2`。
 - 创建请求使用 POST，且不会自动重试；不支持 Webhook 接收和异步 Base64 编辑。
 
+查询、等待任务或使用 `--async --wait` 前，在 Bash 或 zsh 中隐藏输入资源 Key：
+
+```bash
+printf "SuperToken Resource API Key: " >&2
+IFS= read -r -s SUPERTOKEN_RESOURCE_API_KEY
+printf "\n" >&2
+export SUPERTOKEN_RESOURCE_API_KEY
+```
+
 任务查询、轮询休眠和结果下载共用一个截止时间。
 
 ## 升级

@@ -95,9 +95,18 @@ python3 scripts/supertoken_image.py wait TASK_ID \
 ## Notes
 
 - `SUPERTOKEN_API_KEY` is the model Token (`sk-...`) for generation, edit, model listing, and async creation.
-- `SUPERTOKEN_RESOURCE_API_KEY` is the resource Key (`ak-...`) for async task queries and waits.
+- `SUPERTOKEN_RESOURCE_API_KEY` is the resource Key (`ak_...`) for async task queries and waits.
 - `gpt-image-2-count` is the default; use `gpt-image-2` for `n > 1` or full Images API parameters.
 - Creation POST requests do not retry automatically. Webhook receiving and asynchronous Base64 editing are unsupported.
+
+Before querying or waiting for a task, or using `--async --wait`, enter the resource Key without echoing it in Bash or zsh:
+
+```bash
+printf "SuperToken Resource API Key: " >&2
+IFS= read -r -s SUPERTOKEN_RESOURCE_API_KEY
+printf "\n" >&2
+export SUPERTOKEN_RESOURCE_API_KEY
+```
 
 Task queries, polling sleeps, and result downloads share one deadline.
 

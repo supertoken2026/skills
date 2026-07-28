@@ -52,6 +52,11 @@ class DistributionWorkflowTests(unittest.TestCase):
                 text = path.read_text(encoding="utf-8")
                 self.assertIn("SUPERTOKEN_API_KEY", text)
                 self.assertIn("SUPERTOKEN_RESOURCE_API_KEY", text)
+                self.assertIn("`ak_...`", text)
+                self.assertIn(
+                    "IFS= read -r -s SUPERTOKEN_RESOURCE_API_KEY", text
+                )
+                self.assertIn("export SUPERTOKEN_RESOURCE_API_KEY", text)
                 self.assertIn("gpt-image-2-count", text)
                 self.assertIn("gpt-image-2", text)
                 self.assertIn("POST", text)
@@ -282,16 +287,28 @@ class DistributionWorkflowTests(unittest.TestCase):
 
     def test_readme_skills_cli_commands_use_the_pinned_version(self):
         commands = [
-            line
+            line.lstrip()
             for path in (README, README_EN)
             for line in path.read_text(encoding="utf-8").splitlines()
-            if line.startswith("npx ")
+            if line.lstrip().startswith("npx ")
         ]
 
         self.assertTrue(commands)
         for command in commands:
             with self.subTest(command=command):
                 self.assertTrue(command.startswith("npx --yes skills@1.5.19 "))
+
+        install_commands = (
+            "npx --yes skills@1.5.19 add supertoken2026/skills "
+            "--skill supertoken-gpt-image-2 --agent codex --global",
+            "npx --yes skills@1.5.19 add supertoken2026/skills "
+            "--skill supertoken-gpt-image-2 --agent codex claude-code --global",
+        )
+        for path in (README, README_EN):
+            text = path.read_text(encoding="utf-8")
+            for command in install_commands:
+                with self.subTest(path=path, command=command):
+                    self.assertIn(command, text)
 
 
 if __name__ == "__main__":
