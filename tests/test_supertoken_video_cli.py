@@ -212,6 +212,17 @@ class VideoCliTests(unittest.TestCase):
                     self.assertNotIn("NaN", stderr)
                     self.assertNotIn("Infinity", stderr)
 
+    def test_metadata_json_rejects_non_finite_values_before_requests(self):
+        with patch.object(cli.api, "request_json") as request:
+            code, stdout, stderr = run_cli(
+                ["generate", "--model", "adobe-kling-3.0-720p", "--prompt", "sunrise", "--duration", "3", "--metadata-json", '{"value":NaN}'],
+                {"SUPERTOKEN_API_KEY": "sk_test"},
+            )
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertNotIn("NaN", stderr)
+        request.assert_not_called()
+
     def test_read_task_uses_resource_key_and_never_prints_result_urls(self):
         task = response({"id": "task_1", "status": "succeeded", "result": {"videos": [{"url": "https://assets.example/a.mp4?token=secret"}]}})
         with patch.object(cli.api, "request_json", return_value=task) as request:

@@ -29,6 +29,15 @@ class VideoConfigTests(unittest.TestCase):
 
 
 class VideoTransportTests(unittest.TestCase):
+    def test_request_json_rejects_non_finite_payload_values_before_transport(self):
+        with patch.object(api, "_open_request") as opened:
+            with self.assertRaises(api.ApiUsageError):
+                api.request_json(
+                    "POST", "https://api.example/v1/video/tasks", "sk_test", 30,
+                    {"metadata": {"value": float("nan")}},
+                )
+        opened.assert_not_called()
+
     def test_json_request_sends_bearer_json_and_never_follows_redirects(self):
         response = api.ApiResponse(202, {"Content-Type": "application/json"}, b'{"id":"task_1"}')
         with patch.object(api, "_open_request", return_value=response) as opened:
@@ -130,6 +139,68 @@ class VideoTransportTests(unittest.TestCase):
 
 
 class VideoMediaTransferTests(unittest.TestCase):
+    def test_download_deadline_after_fsync_cleans_output_before_promotion(self):
+        class Clock:
+            def __init__(self):
+                self.value = 0.0
+
+            def __call__(self):
+                return self.value
+
+        class Response:
+            status = 200
+            headers = {}
+
+            def __init__(self):
+                self.chunks = [b"video", b""]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _size=-1):
+                return self.chunks.pop(0)
+
+        clock = Clock()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            def advance_after_sync(_descriptor):
+                clock.value = 1.1
+
+            with patch.object(api, "_open_public_request", return_value=Response()), patch.object(api.os, "fsync", side_effect=advance_after_sync):
+                with self.assertRaises(api.ApiResponseError):
+                    api.download_video_items(
+                        [{"url": "https://cdn.example/video.mp4", "filename": "video.mp4"}],
+                        temp_dir, 30, deadline=1.0, monotonic=clock,
+                    )
+            self.assertEqual(list(Path(temp_dir).iterdir()), [])
+
+    def test_download_deadline_before_promotion_cleans_staged_output(self):
+        class Clock:
+            def __init__(self):
+                self.value = 0.0
+
+            def __call__(self):
+                return self.value
+
+        clock = Clock()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            part = Path(temp_dir) / ".video.part"
+            part.write_bytes(b"video")
+
+            def staged_download(*_args, **_kwargs):
+                clock.value = 1.1
+                return part, 5
+
+            with patch.object(api, "_stage_download", side_effect=staged_download):
+                with self.assertRaises(api.ApiResponseError):
+                    api.download_video_items(
+                        [{"url": "https://cdn.example/video.mp4", "filename": "video.mp4"}],
+                        temp_dir, 30, deadline=1.0, monotonic=clock,
+                    )
+            self.assertEqual(list(Path(temp_dir).iterdir()), [])
+
     def test_download_deadline_after_final_eof_read_cleans_staged_output(self):
         class Clock:
             def __init__(self):

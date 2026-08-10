@@ -149,8 +149,11 @@ def _validate_generate_args(args):
         raise api.ApiUsageError("--idempotency-key must be printable ASCII")
     if args.metadata_json is not None:
         try:
-            metadata = json.loads(args.metadata_json)
-        except json.JSONDecodeError as exc:
+            metadata = json.loads(
+                args.metadata_json,
+                parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
             raise api.ApiUsageError("--metadata-json must be a JSON object") from exc
         if not isinstance(metadata, dict):
             raise api.ApiUsageError("--metadata-json must be a JSON object")
