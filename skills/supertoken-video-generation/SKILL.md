@@ -1,22 +1,31 @@
 ---
 name: supertoken-video-generation
-description: Generate Adobe and Leonardo videos through SuperToken, including model discovery, asynchronous task creation, safe media upload, polling, and local result saving.
+description: Use when generating, uploading reference media for, querying, waiting for, or saving Adobe or Leonardo videos through the SuperToken unified video task API.
 ---
 
 # SuperToken Video Generation
 
-Use this skill when a user needs to list available SuperToken video models, create an Adobe or Leonardo video task, check an asynchronous task, or save its finished videos locally.
+Resolve the absolute-at-runtime directory containing this `SKILL.md` as `SKILL_DIR`; run every command with `python3 "$SKILL_DIR/scripts/supertoken_video.py"`. Read [the video API reference](references/video-api.md) before selecting parameters outside these minimum examples.
 
-## Credential Boundaries
+## Start With Models
 
-- Use `SUPERTOKEN_API_KEY` only for model discovery and video-task creation.
-- Use `SUPERTOKEN_RESOURCE_API_KEY` only for resource uploads, task lookups, and video downloads when the server explicitly requires `url_auth: resource_api_key`.
-- Keep keys out of prompts, logs, filenames, and error messages. The bundled scripts validate key types and redact server diagnostics.
+`models` is mandatory before choosing an ID: `GET /v1/models` is the account authority and wins over static examples.
 
-## Transport Safety
+```bash
+python3 "$SKILL_DIR/scripts/setup.py" --with-resource-key
+python3 "$SKILL_DIR/scripts/supertoken_video.py" models
+python3 "$SKILL_DIR/scripts/supertoken_video.py" generate \
+  --model <id-from-models> --prompt "A quiet sunrise over a lake" \
+  --duration 4 --wait --output ./sunrise.mp4
+```
 
-The scripts only use HTTPS, reject credentialed or private-literal media URLs, do not follow redirects, cap response and media sizes, and write downloads through same-directory `.part` files before atomic replacement.
+Use `SUPERTOKEN_API_KEY` (model Token, `sk-...`) only for `models` and task creation. Use `SUPERTOKEN_RESOURCE_API_KEY` (resource Key, `ak_...`) for upload, task reads, waits, and only result downloads whose `url_auth` is `resource_api_key`.
 
-## Scripts
+```bash
+python3 "$SKILL_DIR/scripts/supertoken_video.py" upload \
+  --file ./reference.png --kind image
+python3 "$SKILL_DIR/scripts/supertoken_video.py" task <task-id>
+python3 "$SKILL_DIR/scripts/supertoken_video.py" wait <task-id> --output ./result.mp4
+```
 
-`scripts/supertoken_video_config.py` provides isolated key lookup and API-base validation. `scripts/supertoken_video_api.py` provides JSON requests, media transfer helpers, and response parsing for the video workflow.
+Pass a local reference to `generate` with `--image`, `--video`, or `--audio`; the script performs the upload protocol. Result URLs are temporary: save them locally and never report signed URLs. `url_auth` controls whether the resource Key is sent. This Skill does not expose xAI endpoints or a webhook receiver.

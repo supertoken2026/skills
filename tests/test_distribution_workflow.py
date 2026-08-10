@@ -23,9 +23,63 @@ REQUIRED_SKILL_FILES = (
     "scripts/supertoken_image.py",
     "references/gpt-image-2-api.md",
 )
+VIDEO_SKILL_DIR = ROOT / "skills" / "supertoken-video-generation"
+VIDEO_REQUIRED_SKILL_FILES = (
+    "SKILL.md",
+    "agents/openai.yaml",
+    "references/video-api.md",
+    "scripts/setup.py",
+    "scripts/supertoken_video.py",
+    "scripts/supertoken_video_api.py",
+    "scripts/supertoken_video_config.py",
+)
 
 
 class DistributionWorkflowTests(unittest.TestCase):
+    def test_video_skill_docs_setup_and_ci_distribution_contract(self):
+        self.assertTrue(
+            all((VIDEO_SKILL_DIR / relative).is_file() for relative in VIDEO_REQUIRED_SKILL_FILES)
+        )
+
+        chinese = README.read_text(encoding="utf-8")
+        english = README_EN.read_text(encoding="utf-8")
+        skill = (VIDEO_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        reference = (VIDEO_SKILL_DIR / "references" / "video-api.md").read_text(
+            encoding="utf-8"
+        )
+        setup = (VIDEO_SKILL_DIR / "scripts" / "setup.py").read_text(
+            encoding="utf-8"
+        )
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        for text in (chinese, english):
+            self.assertIn("supertoken-video-generation", text)
+            self.assertIn("scripts/supertoken_video.py models", text)
+            self.assertIn("--duration 4", text)
+        for value in (
+            "GET /v1/models",
+            "SUPERTOKEN_RESOURCE_API_KEY",
+            "mandatory before choosing an ID",
+            "url_auth",
+            "temporary",
+            "xAI",
+            "webhook receiver",
+            "references/video-api.md",
+        ):
+            with self.subTest(value=value):
+                self.assertIn(value, skill)
+        self.assertIn("wins over the static list", reference)
+        self.assertIn("Adobe", reference)
+        self.assertIn("Leonardo", reference)
+        self.assertIn("getpass.getpass", setup)
+        self.assertIn("--with-resource-key", setup)
+        self.assertNotIn("--api-key", setup)
+        self.assertNotIn("--resource-api-key", setup)
+        for relative in VIDEO_REQUIRED_SKILL_FILES:
+            with self.subTest(ci_relative=relative):
+                self.assertIn(relative, workflow)
+        self.assertIn('"supertoken-video-generation"', workflow)
+
     def test_root_readmes_link_to_each_other_and_keep_quick_start_near_top(self):
         chinese = README.read_text(encoding="utf-8")
         english = README_EN.read_text(encoding="utf-8")
