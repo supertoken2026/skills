@@ -106,17 +106,17 @@ In the installed `supertoken-video-generation` directory reported by the `skills
 python3 scripts/setup.py --with-resource-key
 ```
 
-List the models available to this account first. `GET /v1/models` wins over every static example, so choose an ID only from its response:
+List the complete live model entitlement first. `models --all` returns the raw live output of `GET /v1/models`, which wins over every static example, so choose an ID only from that response. Default `models` is known-family convenience filtering and must not be used for selection:
 
 ```bash
-python3 scripts/supertoken_video.py models
+python3 scripts/supertoken_video.py models --all
 ```
 
-Minimum create, wait, and save example (at least four seconds; replace the model ID with an actual `models` result):
+Minimum create, wait, and save example (at least four seconds; replace the model ID with an actual `models --all` result):
 
 ```bash
 python3 scripts/supertoken_video.py generate \
-  --model <id-from-models> \
+  --model <id-from-models-all> \
   --prompt "Morning mist slowly rising from a quiet lake" \
   --duration 4 \
   --wait --output ./sunrise.mp4

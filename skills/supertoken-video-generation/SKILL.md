@@ -9,13 +9,13 @@ Resolve the absolute-at-runtime directory containing this `SKILL.md` as `SKILL_D
 
 ## Start With Models
 
-`models` is mandatory before choosing an ID: `GET /v1/models` is the account authority and wins over static examples.
+`models --all` is mandatory before choosing an ID: it returns the raw live output of `GET /v1/models`, which is the account authority and wins over static examples. Default `models` is known-family convenience filtering only; it can omit a currently entitled ID and must not be used for selection.
 
 ```bash
 python3 "$SKILL_DIR/scripts/setup.py" --with-resource-key
-python3 "$SKILL_DIR/scripts/supertoken_video.py" models
+python3 "$SKILL_DIR/scripts/supertoken_video.py" models --all
 python3 "$SKILL_DIR/scripts/supertoken_video.py" generate \
-  --model <id-from-models> --prompt "A quiet sunrise over a lake" \
+  --model <id-from-models-all> --prompt "A quiet sunrise over a lake" \
   --duration 4 --wait --output ./sunrise.mp4
 ```
 
