@@ -44,6 +44,29 @@ class VideoCliTests(unittest.TestCase):
         self.assertEqual(request.call_args.args[0], "GET")
         self.assertEqual(request.call_args.args[2], "sk_test")
 
+    def test_models_all_keeps_live_video_ids_outside_static_known_families(self):
+        live_unrecognized = "adobe-nextgen-video-2026"
+        result = response({"data": [
+            {"id": "adobe-kling-3.0-720p"},
+            {"id": live_unrecognized},
+        ]})
+        with patch.object(cli.api, "request_json", return_value=result):
+            code, stdout, stderr = run_cli(
+                ["models", "--all"], {"SUPERTOKEN_API_KEY": "sk_test"}
+            )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(
+            json.loads(stdout),
+            {"models": ["adobe-kling-3.0-720p", live_unrecognized]},
+        )
+
+        with patch.object(cli.api, "request_json", return_value=result):
+            code, stdout, stderr = run_cli(
+                ["models"], {"SUPERTOKEN_API_KEY": "sk_test"}
+            )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(json.loads(stdout), {"models": ["adobe-kling-3.0-720p"]})
+
     def test_json_summaries_redact_key_shaped_server_and_client_values(self):
         listed = response({"data": [{"id": "adobe-sk_server_secret"}]})
         with patch.object(cli.api, "request_json", return_value=listed):
