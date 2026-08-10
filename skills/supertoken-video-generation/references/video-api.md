@@ -1,6 +1,6 @@
 # SuperToken Video API Reference
 
-本参考对应 `scripts/supertoken_video.py`。先运行 `GET /v1/models`；它始终优先于下表的静态已知 ID 和模型族，静态列表不能证明当前账号可用。
+本参考对应 `scripts/supertoken_video.py`。选择前必须运行 `models --all`，取得 `GET /v1/models` 的原始实时输出；它始终优先于下表的静态已知 ID 和模型族，静态列表不能证明当前账号可用。默认 `models` 仅按已知模型族做便利过滤，可能遗漏当前账号已有权限的 ID，不能用于选择。
 
 ## 端点与密钥
 
@@ -38,7 +38,7 @@
 
 # English
 
-This reference covers `scripts/supertoken_video.py`. Run `GET /v1/models` before every selection; it is authoritative for account entitlement and wins over every static ID or family below.
+This reference covers `scripts/supertoken_video.py`. Run `models --all` before every selection to obtain the raw live output of `GET /v1/models`; it is authoritative for account entitlement and wins over every static ID or family below. Default `models` is known-family convenience filtering only and can omit an entitled ID, so it is not a selection command.
 
 ## Endpoints and keys
 

@@ -54,7 +54,7 @@ class DistributionWorkflowTests(unittest.TestCase):
 
         for text in (chinese, english):
             self.assertIn("supertoken-video-generation", text)
-            self.assertIn("scripts/supertoken_video.py models", text)
+            self.assertIn("scripts/supertoken_video.py models --all", text)
             self.assertIn("--duration 4", text)
         for value in (
             "GET /v1/models",
@@ -69,6 +69,11 @@ class DistributionWorkflowTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIn(value, skill)
         self.assertIn("wins over the static list", reference)
+        for text in (chinese, english, skill, reference):
+            with self.subTest(authoritative_selection=text[:20]):
+                self.assertIn("models --all", text)
+        self.assertIn("known-family convenience filtering", skill)
+        self.assertIn("raw live output", skill)
         self.assertIn("Adobe", reference)
         self.assertIn("Leonardo", reference)
         self.assertIn("getpass.getpass", setup)

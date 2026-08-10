@@ -106,17 +106,17 @@ npx --yes skills@1.5.19 add supertoken2026/skills --skill supertoken-video-gener
 python3 scripts/setup.py --with-resource-key
 ```
 
-先查询当前账号可用模型。`GET /v1/models` 的结果优先于任何静态示例，必须从中选择 ID：
+先查询当前账号完整的可用模型。`models --all` 输出 `GET /v1/models` 的原始实时结果，优先于任何静态示例，必须从中选择 ID；默认 `models` 仅是已知模型族的便利过滤，不能用于选择：
 
 ```bash
-python3 scripts/supertoken_video.py models
+python3 scripts/supertoken_video.py models --all
 ```
 
-最小生成、等待并保存示例（至少 4 秒；将模型 ID 替换为 `models` 的实际输出）：
+最小生成、等待并保存示例（至少 4 秒；将模型 ID 替换为 `models --all` 的实际输出）：
 
 ```bash
 python3 scripts/supertoken_video.py generate \
-  --model <id-from-models> \
+  --model <id-from-models-all> \
   --prompt "清晨湖面上缓慢升起的薄雾" \
   --duration 4 \
   --wait --output ./sunrise.mp4
