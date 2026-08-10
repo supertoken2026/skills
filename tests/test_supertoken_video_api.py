@@ -130,6 +130,42 @@ class VideoTransportTests(unittest.TestCase):
 
 
 class VideoMediaTransferTests(unittest.TestCase):
+    def test_download_deadline_after_final_eof_read_cleans_staged_output(self):
+        class Clock:
+            def __init__(self):
+                self.value = 0.0
+
+            def __call__(self):
+                return self.value
+
+        class Response:
+            status = 200
+            headers = {}
+
+            def __init__(self, clock):
+                self.clock = clock
+                self.chunks = [b"video", b""]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _size=-1):
+                self.clock.value += 0.6
+                return self.chunks.pop(0)
+
+        clock = Clock()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(api, "_open_public_request", return_value=Response(clock)):
+                with self.assertRaises(api.ApiResponseError):
+                    api.download_video_items(
+                        [{"url": "https://cdn.example/video.mp4", "filename": "video.mp4"}],
+                        temp_dir, 30, deadline=1.0, monotonic=clock,
+                    )
+            self.assertEqual(list(Path(temp_dir).iterdir()), [])
+
     def test_upload_rejects_alternate_numeric_loopback_urls_before_transport(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "source.mp4"

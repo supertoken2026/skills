@@ -432,6 +432,7 @@ def _stage_download(url, destination, timeout, resource_key=None, *, deadline=No
                 chunk = response.read(min(CHUNK_SIZE, MAX_MEDIA_BYTES - total + 1))
                 if not isinstance(chunk, (bytes, bytearray)):
                     raise ApiResponseError("could not read video download")
+                _remaining_timeout(timeout, deadline, monotonic)
                 total += len(chunk)
                 if total > MAX_MEDIA_BYTES:
                     raise ApiResponseError("video download exceeds the size limit")

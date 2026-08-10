@@ -35,13 +35,20 @@ _LEONARDO_SEEDANCE_25 = re.compile(r"leonardo-seedance-2\.5-(?:480p|720p)\Z")
 _H3 = "leonardo-minimax-h3-1440p"
 
 
+class _ArgumentParser(argparse.ArgumentParser):
+    """Raise a controlled error without echoing untrusted command-line values."""
+
+    def error(self, _message):
+        raise api.ApiUsageError("invalid command line arguments")
+
+
 def _common_options(parser, key_name):
     parser.add_argument("--base-url")
     parser.add_argument(key_name)
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Create and retrieve SuperToken video tasks.")
+    parser = _ArgumentParser(description="Create and retrieve SuperToken video tasks.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     models = subparsers.add_parser("models")
@@ -285,6 +292,13 @@ def _task_from_response(response, expected_id=None):
     status = task.get("status")
     if not isinstance(task_id, str) or not _TASK_ID.fullmatch(task_id) or not isinstance(status, str):
         raise api.ApiResponseError("task response was invalid")
+    progress = task.get("progress")
+    if progress is not None and (
+        not isinstance(progress, (int, float))
+        or isinstance(progress, bool)
+        or not math.isfinite(progress)
+    ):
+        raise api.ApiResponseError("task response progress was invalid")
     if expected_id is not None and task_id != expected_id:
         raise api.ApiResponseError("task response ID did not match the requested task")
     return task
@@ -415,6 +429,9 @@ def _run_upload(args):
 def main(argv=None) -> int:
     try:
         args = parse_args(argv)
+    except api.ApiUsageError as exc:
+        print(api.sanitize_diagnostic(str(exc)), file=sys.stderr)
+        return 2
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else 2
     secrets = [value for value in (getattr(args, "api_key", None), getattr(args, "resource_api_key", None)) if isinstance(value, str)]
