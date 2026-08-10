@@ -187,7 +187,7 @@ def _response_status(response):
         raise ApiResponseError("HTTP response had no valid status") from exc
 
 
-def _open_request(request, timeout, *, secrets=()) -> ApiResponse:
+def _open_request(request, timeout) -> ApiResponse:
     """Open one authenticated request; the opener never follows redirects."""
     try:
         with _OPENER.open(request, timeout=timeout) as response:
@@ -196,20 +196,16 @@ def _open_request(request, timeout, *, secrets=()) -> ApiResponse:
             body = _bounded_read(response, MAX_API_BODY_BYTES, "API response", headers)
     except urllib.error.HTTPError as exc:
         try:
-            body = _bounded_read(exc, MAX_ERROR_BODY_BYTES, "API error response", exc.headers or {})
+            _bounded_read(exc, MAX_ERROR_BODY_BYTES, "API error response", exc.headers or {})
         finally:
             exc.close()
-        raise ApiResponseError(
-            f"SuperToken request failed (HTTP {exc.code}): {sanitize_diagnostic(body, *secrets)}"
-        ) from None
+        raise ApiResponseError(f"SuperToken request failed (HTTP {exc.code})") from None
     except (OSError, ValueError, urllib.error.URLError) as exc:
         raise ApiResponseError("SuperToken request could not be completed") from exc
     if 300 <= status < 400:
         raise ApiResponseError("SuperToken request was redirected and was not followed")
     if not 200 <= status < 300:
-        raise ApiResponseError(
-            f"SuperToken request failed (HTTP {status}): {sanitize_diagnostic(body, *secrets)}"
-        )
+        raise ApiResponseError(f"SuperToken request failed (HTTP {status})")
     return ApiResponse(status, headers, body)
 
 
@@ -237,7 +233,7 @@ def request_json(method, url, api_key, timeout, payload=None, headers=None) -> A
             request.add_unredirected_header(name, value)
         else:
             request.add_header(name, value)
-    return _open_request(request, timeout, secrets=(api_key,))
+    return _open_request(request, timeout)
 
 
 def parse_json_response(response: ApiResponse) -> dict:
