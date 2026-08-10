@@ -120,6 +120,53 @@ class VideoCliTests(unittest.TestCase):
         self.assertNotIn("provider_options", payload)
         self.assertEqual(payload["output"], {"duration": 4, "aspect_ratio": "16:9", "generate_audio": True})
 
+    def test_veo_frame_accepts_image_for_fast_and_standard(self):
+        for model, duration in (
+            ("adobe-veo-3.1-fast-720p", "4"),
+            ("adobe-veo-3.1-standard-720p", "6"),
+        ):
+            with self.subTest(model=model):
+                args = cli.parse_args([
+                    "generate", "--model", model, "--prompt", "a calm lake",
+                    "--duration", duration, "--reference-mode", "frame",
+                    "--image", "https://assets.example/frame.png",
+                ])
+                payload = cli.build_task_payload(
+                    args, [{"kind": "image", "url": "https://assets.example/frame.png"}]
+                )
+                self.assertEqual(payload["input"]["reference_mode"], "frame")
+
+    def test_veo_rejects_unsupported_modes_and_invalid_standard_images(self):
+        cases = (
+            [
+                "generate", "--model", "adobe-veo-3.1-fast-720p", "--prompt", "lake",
+                "--duration", "4", "--reference-mode", "media",
+                "--image", "https://assets.example/frame.png",
+            ],
+            [
+                "generate", "--model", "adobe-veo-3.1-fast-720p", "--prompt", "lake",
+                "--duration", "4", "--reference-mode", "images",
+                "--image", "https://assets.example/frame.png",
+            ],
+            [
+                "generate", "--model", "adobe-veo-3.1-standard-720p", "--prompt", "lake",
+                "--duration", "6", "--reference-mode", "images",
+                "--image", "https://assets.example/frame.png",
+            ],
+            [
+                "generate", "--model", "adobe-veo-3.1-standard-720p", "--prompt", "lake",
+                "--duration", "8", "--aspect-ratio", "9:16", "--reference-mode", "images",
+                "--image", "https://assets.example/frame.png",
+            ],
+        )
+        for argv in cases:
+            with self.subTest(argv=argv):
+                args = cli.parse_args(argv)
+                with self.assertRaises(api.ApiUsageError):
+                    cli.build_task_payload(
+                        args, [{"kind": "image", "url": "https://assets.example/frame.png"}]
+                    )
+
     def test_wait_polls_with_resource_key_and_downloads_only_protected_urls(self):
         queued = api.ApiResponse(200, {"Retry-After": "2"}, b'{"id":"task_1","status":"queued"}')
         succeeded = api.ApiResponse(200, {}, b'{"id":"task_1","status":"succeeded","result":{"videos":[{"url":"https://assets.example/a.mp4","url_auth":"resource_api_key","filename":"a.mp4"}]}}')

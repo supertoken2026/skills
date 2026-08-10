@@ -179,10 +179,18 @@ def _validate_model_constraints(args, references):
         variant = _VEO.fullmatch(args.model).group(1)
         if duration not in {4, 6, 8}:
             raise api.ApiUsageError("Veo 3.1 duration must be 4, 6, or 8 seconds")
-        if references and mode != "images":
-            raise api.ApiUsageError("Veo 3.1 references require --reference-mode images")
-        if variant == "standard" and mode == "images" and (duration != 8 or args.aspect_ratio != "16:9"):
-            raise api.ApiUsageError("Veo 3.1 standard images require 8 seconds and 16:9")
+        if mode == "frame":
+            if len(references) > 2 or any(item[0] != "image" for item in references):
+                raise api.ApiUsageError("Veo 3.1 frame supports up to two images")
+        elif mode == "images":
+            if variant != "standard":
+                raise api.ApiUsageError("Veo 3.1 fast supports frame references only")
+            if not 1 <= len(references) <= 3 or any(item[0] != "image" for item in references):
+                raise api.ApiUsageError("Veo 3.1 standard images require one to three images")
+            if duration != 8 or args.aspect_ratio != "16:9":
+                raise api.ApiUsageError("Veo 3.1 standard images require 8 seconds and 16:9")
+        elif references:
+            raise api.ApiUsageError("Veo 3.1 references require frame or standard images mode")
     elif kind == "adobe-seedance":
         if not 4 <= duration <= 15:
             raise api.ApiUsageError("Adobe Seedance 2.0 requires 4-15 seconds")
@@ -203,9 +211,9 @@ def _validate_model_constraints(args, references):
             raise api.ApiUsageError("MiniMax H3 requires 5-15 seconds")
         if args.no_audio:
             raise api.ApiUsageError("MiniMax H3 always generates audio")
-    if mode == "frame" and (len(references) != 1 or references[0][0] != "image"):
+    if kind != "veo" and mode == "frame" and (len(references) != 1 or references[0][0] != "image"):
         raise api.ApiUsageError("frame reference mode requires exactly one image")
-    if mode == "images" and (not references or any(item[0] != "image" for item in references)):
+    if kind != "veo" and mode == "images" and (not references or any(item[0] != "image" for item in references)):
         raise api.ApiUsageError("images reference mode requires image references")
 
 

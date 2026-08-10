@@ -73,7 +73,12 @@ class DistributionWorkflowTests(unittest.TestCase):
             with self.subTest(authoritative_selection=text[:20]):
                 self.assertIn("models --all", text)
         self.assertIn("known-family convenience filtering", skill)
-        self.assertIn("raw live output", skill)
+        self.assertIn("raw live account inventory", skill)
+        self.assertIn("non-video IDs", skill)
+        self.assertIn("非视频 ID", chinese)
+        for text in (english, reference):
+            with self.subTest(non_video_inventory=text[:20]):
+                self.assertIn("non-video IDs", text)
         self.assertIn("Adobe", reference)
         self.assertIn("Leonardo", reference)
         self.assertIn("getpass.getpass", setup)
