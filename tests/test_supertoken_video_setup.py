@@ -83,11 +83,15 @@ class VideoSetupTests(unittest.TestCase):
     def test_rejects_key_argv_unknown_args_and_url_or_wrong_type_without_leakage(self):
         secret = "sk_argv_secret"
         stderr = io.StringIO()
-        for option in ("--api-key", "--unknown-option"):
-            with self.subTest(option=option):
+        for argv in (
+            ["--api-key", secret],
+            ["--unknown-option", secret],
+            [secret],
+        ):
+            with self.subTest(argv=argv):
                 stderr = io.StringIO()
                 with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as captured:
-                    setup.main([option, secret])
+                    setup.main(argv)
                 self.assertEqual(captured.exception.code, 2)
                 self.assertNotIn(secret, stderr.getvalue())
 
