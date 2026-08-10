@@ -19,14 +19,14 @@
 
 | 渠道 | 静态已知 ID / 模型族 | 时长 | 画幅 | 参考模式 | 音频 |
 | --- | --- | --- | --- | --- | --- |
-| Adobe Kling 3.0 | `adobe-kling-3.0-{720p,1080p}`、`adobe-kling-3.0-omni-{720p,1080p}` | 3-15 秒 | `16:9`、`9:16` | 服务端校验 | 可用 `--no-audio` |
-| Adobe Veo 3.1 | `adobe-veo-3.1-{standard,fast}-{720p,1080p}` | 4、6、8 秒 | Standard 的 `images` 仅 8 秒、`16:9` | Standard/Fast: `frame` 0-2 张图片；Standard: `images` 1-3 张图片 | 可用 `--no-audio` |
-| Adobe Seedance 2.0 | `adobe-seedance-2.0-{480p,720p}`；`adobe-seedance-*` 为族 | 4-15 秒 | 服务端校验 | `frame` 或 `media` | 可用 `--no-audio` |
-| Leonardo Seedance 2.0 | `leonardo-seedance-2.0-*`、`leonardo-seedance-2.0-fast-*` | 4-15 秒 | 服务端校验 | 仅 `media` | 可用 `--no-audio` |
-| Leonardo Seedance 2.5 | `leonardo-seedance-2.5-{480p,720p}` | 4-30 秒 | 服务端校验 | `frame` 或 `media` | 可用 `--no-audio` |
-| Leonardo MiniMax H3 | `leonardo-minimax-h3-1440p` | 5-15 秒 | 服务端校验 | 服务端校验 | 固定开启，拒绝 `--no-audio` |
+| Adobe Kling 3.0 | `adobe-kling-3.0-{720p,1080p}`、`adobe-kling-3.0-omni-{720p,1080p}` | 3-15 秒 | `16:9`、`9:16` | `frame` 0-2 图；仅 Omni `images` 1-3 图；无媒体/视频/音频参考 | 可用 `--no-audio` |
+| Adobe Veo 3.1 | `adobe-veo-3.1-{standard,fast}-{720p,1080p}` | 4、6、8 秒 | `16:9`、`9:16`；Standard 的 `images` 仅 8 秒、`16:9` | Standard/Fast: `frame` 0-2 张图片；Standard: `images` 1-3 张图片 | 可用 `--no-audio` |
+| Adobe Seedance 2.0 | `adobe-seedance-2.0-{480p,720p}`；`adobe-seedance-*` 为族 | 4-15 秒 | `21:9`、`16:9`、`4:3`、`1:1`、`3:4`、`9:16` | `frame` 0-2 图；`media` 图/视频/音频最多 9/3/3，总数最多 12 | 可用 `--no-audio` |
+| Leonardo Seedance 2.0 | `leonardo-seedance-2.0-*`、`leonardo-seedance-2.0-fast-*` | 4-15 秒 | 同上六种 | 仅 `media`：图/视频/音频最多 4/3/1，总数最多 8；音频须搭配图或视频 | 可用 `--no-audio` |
+| Leonardo Seedance 2.5 | `leonardo-seedance-2.5-{480p,720p}` | 4-30 秒 | 同上六种 | `frame` 1-2 图；`media` 图/视频/音频最多 30/10/10，总数最多 50；音频须搭配图或视频 | 可用 `--no-audio` |
+| Leonardo MiniMax H3 | `leonardo-minimax-h3-1440p` | 5-15 秒 | 同上六种 | `frame` 1-2 图；`images` 1-5 图；`media` 1-5 图 + 1-3 音频，拒绝视频 | 固定开启，拒绝 `--no-audio` |
 
-除 Veo 外，`frame` 要求恰好一个图片；Veo 的 `frame` 接受 0-2 张图片，且无图片的文本生成默认发送 `reference_mode: frame`。`frame` 的第一张 `--image` 映射到 `input.image`（起始帧），Veo 的可选第二张映射到 `input.reference_images[]`（结束帧）。`images` 的所有 `--image` 都映射到 `input.reference_images[]`，并省略 `input.image`。参考素材存在时必须明确 `--reference-mode frame|images|media`。模型族范围仅用于本地预校验，不生成或猜测具体 ID。
+参考字段是模型专用语义：`frame` 的第一张 `--image` 映射到 `input.image`（起始帧），允许第二帧时映射到 `input.reference_images[0]`（结束帧）。Veo Standard 与 Kling Omni 的 `images` 将所有图片放进 `input.reference_images[]`，省略 `input.image`；H3 的 `images` 则以 `input.image` 为第一张，其余放进 `input.reference_images[]`。`media` 的图片同样首图在 `input.image`，其余在 `input.reference_images[]`；视频和音频始终分别使用 `input.reference_videos[]` 和 `input.reference_audios[]`。Veo 无图片文本生成默认发送 `reference_mode: frame`。参考素材存在时必须明确 `--reference-mode frame|images|media`。模型族范围仅用于本地预校验，不生成或猜测具体 ID。
 
 ## 任务与错误
 
@@ -57,14 +57,14 @@ The upload protocol is: `POST /v1/media/uploads`, send the immutable local file 
 
 | Provider | Static known ID or family | Duration | Aspect ratio | Reference mode | Audio |
 | --- | --- | --- | --- | --- | --- |
-| Adobe Kling 3.0 | `adobe-kling-3.0-{720p,1080p}`, `adobe-kling-3.0-omni-{720p,1080p}` | 3-15 s | `16:9`, `9:16` | server validation | `--no-audio` allowed |
-| Adobe Veo 3.1 | `adobe-veo-3.1-{standard,fast}-{720p,1080p}` | 4, 6, or 8 s | Standard `images`: 8 s, `16:9` | Standard/Fast `frame`: 0-2 images; Standard `images`: 1-3 images | `--no-audio` allowed |
-| Adobe Seedance 2.0 | `adobe-seedance-2.0-{480p,720p}`; `adobe-seedance-*` is a family | 4-15 s | server validation | `frame` or `media` | `--no-audio` allowed |
-| Leonardo Seedance 2.0 | `leonardo-seedance-2.0-*`, `leonardo-seedance-2.0-fast-*` | 4-15 s | server validation | `media` only | `--no-audio` allowed |
-| Leonardo Seedance 2.5 | `leonardo-seedance-2.5-{480p,720p}` | 4-30 s | server validation | `frame` or `media` | `--no-audio` allowed |
-| Leonardo MiniMax H3 | `leonardo-minimax-h3-1440p` | 5-15 s | server validation | server validation | always on; rejects `--no-audio` |
+| Adobe Kling 3.0 | `adobe-kling-3.0-{720p,1080p}`, `adobe-kling-3.0-omni-{720p,1080p}` | 3-15 s | `16:9`, `9:16` | `frame` 0-2 images; Omni-only `images` 1-3; no media, video, or audio references | `--no-audio` allowed |
+| Adobe Veo 3.1 | `adobe-veo-3.1-{standard,fast}-{720p,1080p}` | 4, 6, or 8 s | `16:9`, `9:16`; Standard `images`: 8 s, `16:9` | Standard/Fast `frame`: 0-2 images; Standard `images`: 1-3 images | `--no-audio` allowed |
+| Adobe Seedance 2.0 | `adobe-seedance-2.0-{480p,720p}`; `adobe-seedance-*` is a family | 4-15 s | `21:9`, `16:9`, `4:3`, `1:1`, `3:4`, `9:16` | `frame` 0-2 images; `media` image/video/audio max 9/3/3, total max 12 | `--no-audio` allowed |
+| Leonardo Seedance 2.0 | `leonardo-seedance-2.0-*`, `leonardo-seedance-2.0-fast-*` | 4-15 s | same six ratios | `media` only: image/video/audio max 4/3/1, total max 8; audio needs an image or video | `--no-audio` allowed |
+| Leonardo Seedance 2.5 | `leonardo-seedance-2.5-{480p,720p}` | 4-30 s | same six ratios | `frame` 1-2 images; `media` image/video/audio max 30/10/10, total max 50; audio needs an image or video | `--no-audio` allowed |
+| Leonardo MiniMax H3 | `leonardo-minimax-h3-1440p` | 5-15 s | same six ratios | `frame` 1-2 images; `images` 1-5; `media` 1-5 images + 1-3 audio, no video | always on; rejects `--no-audio` |
 
-Except for Veo, `frame` requires exactly one image. Veo `frame` accepts 0-2 images and text-only generation defaults to `reference_mode: frame`. The first `--image` in `frame` maps to `input.image` (the start frame); Veo's optional second image maps to `input.reference_images[]` (the end frame). Every `--image` in `images` maps to `input.reference_images[]`, with `input.image` omitted. Specify `--reference-mode` whenever references are present. Family ranges support only local preflight validation; they do not create entitlement or invent an ID.
+Reference fields have model-specific semantics. The first `--image` in `frame` maps to `input.image` (the start frame); an allowed second frame maps to `input.reference_images[0]` (the end frame). Veo Standard and Kling Omni `images` put every image in `input.reference_images[]` and omit `input.image`; H3 `images` puts the first image in `input.image` and later images in `input.reference_images[]`. Media images use that same first-image/remaining-images layout, while video and audio always use `input.reference_videos[]` and `input.reference_audios[]`. Text-only Veo defaults to `reference_mode: frame`. Specify `--reference-mode` whenever references are present. Family ranges support only local preflight validation; they do not create entitlement or invent an ID.
 
 ## Task fields, states, and errors
 

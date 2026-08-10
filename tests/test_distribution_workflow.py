@@ -84,6 +84,8 @@ class DistributionWorkflowTests(unittest.TestCase):
         self.assertIn("`input.image`（起始帧）", reference)
         self.assertIn("`input.reference_images[]`", reference)
         self.assertIn("`input.image` (the start frame)", reference)
+        self.assertIn("模型专用", reference)
+        self.assertIn("model-specific", reference)
         self.assertIn("getpass.getpass", setup)
         self.assertIn("--with-resource-key", setup)
         self.assertNotIn("--api-key", setup)

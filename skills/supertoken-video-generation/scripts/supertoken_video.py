@@ -33,6 +33,7 @@ _ADOBE_SEEDANCE = re.compile(r"adobe-seedance-2\.0-(?:480p|720p)\Z")
 _LEONARDO_SEEDANCE_20 = re.compile(r"leonardo-seedance-2\.0(?:-fast)?-[A-Za-z0-9]+\Z")
 _LEONARDO_SEEDANCE_25 = re.compile(r"leonardo-seedance-2\.5-(?:480p|720p)\Z")
 _H3 = "leonardo-minimax-h3-1440p"
+_SIX_ASPECT_RATIOS = {"21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -175,55 +176,97 @@ def _validate_model_constraints(args, references):
     if kind == "kling":
         if not 3 <= duration <= 15 or args.aspect_ratio not in {"16:9", "9:16"}:
             raise api.ApiUsageError("Kling 3.0 requires 3-15 seconds and 16:9 or 9:16")
+        if mode not in {None, "frame", "images"}:
+            raise api.ApiUsageError("Kling 3.0 supports frame or Omni images mode")
+        if mode == "frame":
+            _validate_image_references(references, 0, 2, "Kling 3.0 frame")
+        elif mode == "images":
+            if "-omni-" not in args.model:
+                raise api.ApiUsageError("Kling 3.0 images mode requires an Omni model")
+            _validate_image_references(references, 1, 3, "Kling 3.0 Omni images")
     elif kind == "veo":
         variant = _VEO.fullmatch(args.model).group(1)
-        if duration not in {4, 6, 8}:
-            raise api.ApiUsageError("Veo 3.1 duration must be 4, 6, or 8 seconds")
+        if duration not in {4, 6, 8} or args.aspect_ratio not in {"16:9", "9:16"}:
+            raise api.ApiUsageError("Veo 3.1 requires 4, 6, or 8 seconds and 16:9 or 9:16")
         if mode not in {None, "frame", "images"}:
             raise api.ApiUsageError("Veo 3.1 supports frame or standard images mode")
         if mode == "frame":
-            if len(references) > 2 or any(item[0] != "image" for item in references):
-                raise api.ApiUsageError("Veo 3.1 frame supports up to two images")
+            _validate_image_references(references, 0, 2, "Veo 3.1 frame")
         elif mode == "images":
             if variant != "standard":
                 raise api.ApiUsageError("Veo 3.1 fast supports frame references only")
-            if not 1 <= len(references) <= 3 or any(item[0] != "image" for item in references):
-                raise api.ApiUsageError("Veo 3.1 standard images require one to three images")
+            _validate_image_references(references, 1, 3, "Veo 3.1 standard images")
             if duration != 8 or args.aspect_ratio != "16:9":
                 raise api.ApiUsageError("Veo 3.1 standard images require 8 seconds and 16:9")
-        elif references:
-            raise api.ApiUsageError("Veo 3.1 references require frame or standard images mode")
     elif kind == "adobe-seedance":
-        if not 4 <= duration <= 15:
-            raise api.ApiUsageError("Adobe Seedance 2.0 requires 4-15 seconds")
-        if references and mode not in {"frame", "media"}:
+        if not 4 <= duration <= 15 or args.aspect_ratio not in _SIX_ASPECT_RATIOS:
+            raise api.ApiUsageError("Adobe Seedance 2.0 requires 4-15 seconds and a supported aspect ratio")
+        if mode not in {None, "frame", "media"}:
             raise api.ApiUsageError("Adobe Seedance 2.0 supports frame or media references")
+        if mode == "frame":
+            _validate_image_references(references, 0, 2, "Adobe Seedance 2.0 frame")
+        elif mode == "media":
+            _validate_media_references(references, 9, 3, 3, 12, "Adobe Seedance 2.0")
     elif kind == "leonardo-seedance-20":
-        if not 4 <= duration <= 15:
-            raise api.ApiUsageError("Leonardo Seedance 2.0 requires 4-15 seconds")
-        if references and mode != "media":
+        if not 4 <= duration <= 15 or args.aspect_ratio not in _SIX_ASPECT_RATIOS:
+            raise api.ApiUsageError("Leonardo Seedance 2.0 requires 4-15 seconds and a supported aspect ratio")
+        if mode not in {None, "media"}:
             raise api.ApiUsageError("Leonardo Seedance 2.0 supports media references only")
+        if mode == "media":
+            _validate_media_references(
+                references, 4, 3, 1, 8, "Leonardo Seedance 2.0", require_audio_context=True
+            )
     elif kind == "leonardo-seedance-25":
-        if not 4 <= duration <= 30:
-            raise api.ApiUsageError("Leonardo Seedance 2.5 requires 4-30 seconds")
-        if references and mode not in {"frame", "media"}:
+        if not 4 <= duration <= 30 or args.aspect_ratio not in _SIX_ASPECT_RATIOS:
+            raise api.ApiUsageError("Leonardo Seedance 2.5 requires 4-30 seconds and a supported aspect ratio")
+        if mode not in {None, "frame", "media"}:
             raise api.ApiUsageError("Leonardo Seedance 2.5 supports frame or media references")
+        if mode == "frame":
+            _validate_image_references(references, 1, 2, "Leonardo Seedance 2.5 frame")
+        elif mode == "media":
+            _validate_media_references(
+                references, 30, 10, 10, 50, "Leonardo Seedance 2.5", require_audio_context=True
+            )
     elif kind == "h3":
-        if not 5 <= duration <= 15:
-            raise api.ApiUsageError("MiniMax H3 requires 5-15 seconds")
+        if not 5 <= duration <= 15 or args.aspect_ratio not in _SIX_ASPECT_RATIOS:
+            raise api.ApiUsageError("MiniMax H3 requires 5-15 seconds and a supported aspect ratio")
         if args.no_audio:
             raise api.ApiUsageError("MiniMax H3 always generates audio")
-    if kind != "veo" and mode == "frame" and (len(references) != 1 or references[0][0] != "image"):
-        raise api.ApiUsageError("frame reference mode requires exactly one image")
-    if kind != "veo" and mode == "images" and (not references or any(item[0] != "image" for item in references)):
-        raise api.ApiUsageError("images reference mode requires image references")
+        if mode not in {None, "frame", "images", "media"}:
+            raise api.ApiUsageError("MiniMax H3 supports frame, images, or media references")
+        if mode == "frame":
+            _validate_image_references(references, 1, 2, "MiniMax H3 frame")
+        elif mode == "images":
+            _validate_image_references(references, 1, 5, "MiniMax H3 images")
+        elif mode == "media":
+            _validate_media_references(references, 5, 0, 3, 8, "MiniMax H3", 1, 1)
+
+
+def _validate_image_references(references, minimum, maximum, label):
+    if not minimum <= len(references) <= maximum or any(item[0] != "image" for item in references):
+        raise api.ApiUsageError(f"{label} requires {minimum}-{maximum} image references")
+
+
+def _validate_media_references(
+    references, image_limit, video_limit, audio_limit, total_limit, label,
+    minimum_images=0, minimum_audios=0, require_audio_context=False,
+):
+    counts = {kind: sum(item[0] == kind for item in references) for kind in ("image", "video", "audio")}
+    if (
+        counts["image"] > image_limit or counts["video"] > video_limit
+        or counts["audio"] > audio_limit or len(references) > total_limit
+        or counts["image"] < minimum_images or counts["audio"] < minimum_audios
+        or (require_audio_context and counts["audio"] and not (counts["image"] or counts["video"]))
+    ):
+        raise api.ApiUsageError(f"{label} media references exceed the documented limits")
 
 
 def build_task_payload(args, references) -> dict:
     _validate_generate_args(args)
     input_data = {"prompt": args.prompt}
     reference_mode = args.reference_mode
-    is_veo = _model_kind(args.model) == "veo"
+    model_kind = _model_kind(args.model)
+    is_veo = model_kind == "veo"
     if is_veo and not references and reference_mode is None:
         reference_mode = "frame"
     if references or (is_veo and reference_mode == "frame"):
@@ -235,7 +278,9 @@ def build_task_payload(args, references) -> dict:
     ):
         urls = [{"url": item["url"]} for item in references if item["kind"] == kind]
         if urls:
-            if kind == "image" and reference_mode == "images":
+            if kind in {"video", "audio"}:
+                input_data[plural] = urls
+            elif kind == "image" and reference_mode == "images" and model_kind != "h3":
                 input_data[plural] = urls
             else:
                 input_data[singular] = urls[0]
