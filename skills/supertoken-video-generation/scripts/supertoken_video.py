@@ -464,10 +464,19 @@ def _request_timeout(args):
 
 def read_task(task_id, args) -> dict:
     task_id = _validate_task_id(task_id)
+    deadline = getattr(args, "_deadline", None)
+    deadline_options = {}
+    if deadline is not None:
+        deadline_options = {
+            "deadline": deadline,
+            "deadline_message": "task wait timeout exceeded",
+            "monotonic": time.monotonic,
+        }
     response = api.request_json(
         "GET", api.endpoint_url(_base_url(args), f"/v1/video/tasks/{task_id}"),
         _resource_key(args),
         _request_timeout(args),
+        **deadline_options,
     )
     args._last_response_headers = response.headers
     return _task_from_response(response, task_id)
@@ -510,7 +519,10 @@ def wait_for_task(task_id, args) -> dict:
             output = Path(args.output).expanduser()
             saved = api.download_video_items(
                 _result_videos(task), output.parent, remaining, resource_key,
-                output_path=output, deadline=args._deadline, monotonic=time.monotonic,
+                output_path=output,
+                deadline=args._deadline,
+                deadline_message="task wait timeout exceeded",
+                monotonic=time.monotonic,
             )
             return {"task": task, "outputs": saved}
         if status == "failed":
