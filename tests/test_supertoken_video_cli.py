@@ -452,10 +452,13 @@ class VideoCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             reference = Path(temp_dir) / "reference.png"
             reference.write_bytes(b"image")
-            prepared = response({"id": "media_1", "upload_url": "https://uploads.example/one"})
-            completed = response({"url": "https://assets.example/reference.png"})
+            prepared = response({"data": [{
+                "id": "media_1", "method": "PATCH+SIGNED", "upload_url": "https://uploads.example/one",
+                "headers": {"Content-Type": "image/png", "X-Upload-Token": "signed"},
+            }]})
+            completed = response({"data": [{"id": "media_1", "url": "https://assets.example/reference.png"}]})
             created = response({"id": "task_1", "status": "queued"}, status=202)
-            with patch.object(cli.api, "request_json", side_effect=[prepared, completed, created]) as request, patch.object(cli.api, "upload_media_files", return_value=[]):
+            with patch.object(cli.api, "request_json", side_effect=[prepared, completed, created]) as request, patch.object(cli.api, "upload_media_files", return_value=[]) as uploaded:
                 code, _stdout, stderr = run_cli(
                     ["generate", "--model", "leonardo-seedance-2.5-480p", "--prompt", "lake", "--duration", "4", "--reference-mode", "frame", "--image", str(reference)],
                     {"SUPERTOKEN_API_KEY": "sk_test", "SUPERTOKEN_RESOURCE_API_KEY": "ak_test"},
@@ -464,30 +467,70 @@ class VideoCliTests(unittest.TestCase):
         self.assertEqual(request.call_args_list[0].args[2], "ak_test")
         self.assertEqual(request.call_args_list[1].args[2], "ak_test")
         self.assertEqual(request.call_args_list[2].args[2], "sk_test")
+        self.assertEqual(
+            request.call_args_list[0].args[4],
+            {"files": [{"kind": "image", "filename": "reference.png", "mime_type": "image/png", "size_bytes": 5}]},
+        )
+        self.assertEqual(request.call_args_list[1].args[4], {"upload_ids": ["media_1"]})
+        uploaded.assert_called_once_with(
+            "https://uploads.example/one", [reference], cli.HTTP_TIMEOUT,
+            headers={"Content-Type": "image/png", "X-Upload-Token": "signed"}, method="PATCH+SIGNED",
+        )
 
     def test_upload_requires_resource_key_and_reports_no_temporary_url(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "source.png"
             source.write_bytes(b"image")
-            prepared = response({"id": "media_1", "upload_url": "https://uploads.example/one"})
-            completed = response({"url": "https://assets.example/reference.png"})
-            with patch.object(cli.api, "request_json", side_effect=[prepared, completed]) as request, patch.object(cli.api, "upload_media_files", return_value=[]):
+            prepared = response({"data": [{
+                "id": "media_1", "method": "PATCH", "upload_url": "https://uploads.example/one",
+                "headers": {"Content-Type": "image/png"},
+            }]})
+            completed = response({"data": [{"id": "media_1", "url": "https://assets.example/reference.png"}]})
+            with patch.object(cli.api, "request_json", side_effect=[prepared, completed]) as request, patch.object(cli.api, "upload_media_files", return_value=[]) as uploaded:
                 code, stdout, stderr = run_cli(["upload", "--file", str(source), "--kind", "image"], {"SUPERTOKEN_RESOURCE_API_KEY": "ak_test"})
         self.assertEqual(code, 0, stderr)
         self.assertEqual(request.call_args.args[2], "ak_test")
         self.assertEqual(json.loads(stdout), {"kind": "image", "media_id": "media_1"})
         self.assertNotIn("assets.example", stdout)
+        self.assertEqual(
+            request.call_args_list[0].args[4],
+            {"files": [{"kind": "image", "filename": "source.png", "mime_type": "image/png", "size_bytes": 5}]},
+        )
+        self.assertEqual(request.call_args_list[1].args[4], {"upload_ids": ["media_1"]})
+        uploaded.assert_called_once_with(
+            "https://uploads.example/one", [source], cli.HTTP_TIMEOUT,
+            headers={"Content-Type": "image/png"}, method="PATCH",
+        )
 
     def test_upload_summary_redacts_a_key_shaped_media_id(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "source.png"
             source.write_bytes(b"image")
-            prepared = response({"id": "sk_server_secret", "upload_url": "https://uploads.example/one"})
-            completed = response({"url": "https://assets.example/reference.png"})
+            prepared = response({"data": [{
+                "id": "sk_server_secret", "method": "PUT", "upload_url": "https://uploads.example/one",
+                "headers": {},
+            }]})
+            completed = response({"data": [{"id": "sk_server_secret", "url": "https://assets.example/reference.png"}]})
             with patch.object(cli.api, "request_json", side_effect=[prepared, completed]), patch.object(cli.api, "upload_media_files", return_value=[]):
                 code, stdout, stderr = run_cli(["upload", "--file", str(source), "--kind", "image"], {"SUPERTOKEN_RESOURCE_API_KEY": "ak_test"})
         self.assertEqual(code, 0, stderr)
         self.assertNotIn("sk_server_secret", stdout)
+
+    def test_upload_rejects_malformed_documented_records_before_presigned_request(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            source.write_bytes(b"image")
+            prepared = response({"data": [{
+                "id": "media_1", "method": "PUT", "upload_url": "https://uploads.example/one",
+                "headers": {"X-Upload": "bad\nvalue"},
+            }]})
+            with patch.object(cli.api, "request_json", return_value=prepared), patch.object(cli.api, "upload_media_files") as uploaded:
+                code, _stdout, _stderr = run_cli(
+                    ["upload", "--file", str(source), "--kind", "image"],
+                    {"SUPERTOKEN_RESOURCE_API_KEY": "ak_test"},
+                )
+        self.assertEqual(code, 2)
+        uploaded.assert_not_called()
 
     def test_models_excludes_non_video_vendor_models(self):
         listed = response({"data": [

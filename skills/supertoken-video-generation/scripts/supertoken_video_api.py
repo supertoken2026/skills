@@ -359,7 +359,7 @@ def _open_public_request(request, timeout):
     return response
 
 
-def upload_media_files(upload_url, paths, timeout, headers=None, *, max_file_bytes=MAX_MEDIA_BYTES) -> list[dict]:
+def upload_media_files(upload_url, paths, timeout, headers=None, *, method="PUT", max_file_bytes=MAX_MEDIA_BYTES) -> list[dict]:
     """Upload local media to a temporary HTTPS URL and return upload metadata."""
     _validate_public_url(upload_url, "upload_url")
     _validate_timeout(timeout)
@@ -367,15 +367,14 @@ def upload_media_files(upload_url, paths, timeout, headers=None, *, max_file_byt
         raise ApiUsageError("at least one media file is required")
     if not isinstance(max_file_bytes, int) or max_file_bytes <= 0:
         raise ApiUsageError("max_file_bytes must be positive")
+    if not isinstance(method, str) or not re.fullmatch(r"[!#$%&'*+\-.^_`|~0-9A-Z]+", method):
+        raise ApiUsageError("upload method must be an uppercase HTTP token")
     results = []
     for raw_path in paths:
         source, data = _read_local_file(raw_path, max_file_bytes)
-        request = urllib.request.Request(upload_url, data=data, method="PUT")
-        request.add_header("Content-Type", "application/octet-stream")
+        request = urllib.request.Request(upload_url, data=data, method=method)
         for name, value in (headers or {}).items():
             _validate_header(name, value)
-            if name.lower() == "authorization":
-                raise ApiUsageError("upload authorization must be encoded in the temporary upload URL")
             request.add_header(name, value)
         with _open_public_request(request, timeout) as response:
             _bounded_read(response, MAX_ERROR_BODY_BYTES, "upload response", response.headers)

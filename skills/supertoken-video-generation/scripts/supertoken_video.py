@@ -4,6 +4,7 @@
 import argparse
 import json
 import math
+import mimetypes
 import re
 import sys
 import time
@@ -27,6 +28,7 @@ MIN_POLL_DELAY = 2.0
 MAX_PROMPT_LENGTH = 1200
 _TASK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _IDEMPOTENCY_KEY = re.compile(r"[!-~]{1,255}\Z")
+_HTTP_METHOD = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Z]+\Z")
 _KLING = re.compile(r"adobe-kling-3\.0(?:-omni)?-(?:720p|1080p)\Z")
 _VEO = re.compile(r"adobe-veo-3\.1-(standard|fast)-(?:720p|1080p)\Z")
 _ADOBE_SEEDANCE = re.compile(r"adobe-seedance-2\.0-(?:480p|720p)\Z")
@@ -333,24 +335,69 @@ def _parse_response(response, label):
     return value
 
 
+def _response_data_record(value, label):
+    data = value.get("data")
+    if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
+        raise api.ApiResponseError(f"{label} response was invalid")
+    return data[0]
+
+
+def _prepared_upload_record(value):
+    record = _response_data_record(value, "media upload")
+    upload_id = record.get("id")
+    method = record.get("method")
+    upload_url = record.get("upload_url")
+    headers = record.get("headers")
+    if (
+        not isinstance(upload_id, str) or not _TASK_ID.fullmatch(upload_id)
+        or not isinstance(method, str) or not _HTTP_METHOD.fullmatch(method)
+        or not isinstance(headers, dict)
+    ):
+        raise api.ApiResponseError("media upload response was invalid")
+    try:
+        api.validate_public_url(upload_url, "media upload URL")
+    except api.ApiUsageError as exc:
+        raise api.ApiResponseError("media upload response was invalid") from exc
+    for name, header_value in headers.items():
+        if (
+            not isinstance(name, str) or not name or not isinstance(header_value, str)
+            or "\r" in name or "\n" in name or "\r" in header_value or "\n" in header_value
+        ):
+            raise api.ApiResponseError("media upload response was invalid")
+    return upload_id, method, upload_url, headers
+
+
 def _upload_local_media(path, kind, args, resource_key):
     source = Path(path).expanduser()
+    try:
+        size_bytes = source.stat().st_size
+    except OSError as exc:
+        raise api.ApiUsageError("media file could not be read") from exc
+    mime_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
     base_url = _base_url(args)
     prepared = _parse_response(api.request_json(
         "POST", api.endpoint_url(base_url, "/v1/media/uploads"), resource_key,
-        HTTP_TIMEOUT, {"filename": source.name, "kind": kind},
+        HTTP_TIMEOUT, {"files": [{
+            "kind": kind,
+            "filename": source.name,
+            "mime_type": mime_type,
+            "size_bytes": size_bytes,
+        }]},
     ), "media upload")
-    upload_id = prepared.get("id")
-    upload_url = prepared.get("upload_url")
-    if not isinstance(upload_id, str) or not _TASK_ID.fullmatch(upload_id) or not isinstance(upload_url, str):
-        raise api.ApiResponseError("media upload response was invalid")
-    api.upload_media_files(upload_url, [source], HTTP_TIMEOUT)
+    upload_id, method, upload_url, headers = _prepared_upload_record(prepared)
+    api.upload_media_files(upload_url, [source], HTTP_TIMEOUT, headers=headers, method=method)
     completed = _parse_response(api.request_json(
         "POST", api.endpoint_url(base_url, "/v1/media/uploads/complete"), resource_key,
-        HTTP_TIMEOUT, {"id": upload_id},
+        HTTP_TIMEOUT, {"upload_ids": [upload_id]},
     ), "media completion")
-    url = completed.get("url")
-    _validate_reference_url(url)
+    completed_record = _response_data_record(completed, "media completion")
+    if completed_record.get("id") != upload_id:
+        raise api.ApiResponseError("media completion response was invalid")
+    url = completed_record.get("url")
+    try:
+        api.validate_public_url(url, "media completion URL")
+    except api.ApiUsageError as exc:
+        raise api.ApiResponseError("media completion response was invalid") from exc
     return {"kind": kind, "url": url, "media_id": upload_id}
 
 

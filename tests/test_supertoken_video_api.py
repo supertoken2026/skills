@@ -139,6 +139,35 @@ class VideoTransportTests(unittest.TestCase):
 
 
 class VideoMediaTransferTests(unittest.TestCase):
+    def test_upload_uses_signed_method_and_headers_without_resource_authorization(self):
+        class Response:
+            status = 204
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _size=-1):
+                return b""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.mp4"
+            source.write_bytes(b"video")
+            with patch.object(api, "_open_public_request", return_value=Response()) as opened:
+                api.upload_media_files(
+                    "https://uploads.example/signed", [source], 30,
+                    headers={"Content-Type": "video/custom", "X-Upload-Token": "signed"},
+                    method="PATCH+SIGNED",
+                )
+        request = opened.call_args.args[0]
+        self.assertEqual(request.get_method(), "PATCH+SIGNED")
+        self.assertEqual(request.get_header("Content-type"), "video/custom")
+        self.assertEqual(request.get_header("X-upload-token"), "signed")
+        self.assertIsNone(request.get_header("Authorization"))
+
     def test_download_deadline_after_fsync_cleans_output_before_promotion(self):
         class Clock:
             def __init__(self):
