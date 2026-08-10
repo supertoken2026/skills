@@ -41,6 +41,15 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class _PresignedUploadRequest(urllib.request.Request):
+    """Prevent urllib from adding a content type absent from signed headers."""
+
+    def has_header(self, header_name):
+        if isinstance(header_name, str) and header_name.lower() == "content-type":
+            return True
+        return super().has_header(header_name)
+
+
 _OPENER = urllib.request.build_opener(_NoRedirectHandler())
 _KEY_PATTERN = re.compile(r"\b(?:sk|ak|wk)[_-][A-Za-z0-9._~-]+", re.IGNORECASE)
 _URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
@@ -372,7 +381,7 @@ def upload_media_files(upload_url, paths, timeout, headers=None, *, method="PUT"
     results = []
     for raw_path in paths:
         source, data = _read_local_file(raw_path, max_file_bytes)
-        request = urllib.request.Request(upload_url, data=data, method=method)
+        request = _PresignedUploadRequest(upload_url, data=data, method=method)
         for name, value in (headers or {}).items():
             _validate_header(name, value)
             request.add_header(name, value)

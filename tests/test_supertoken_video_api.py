@@ -3,6 +3,7 @@ import io
 import sys
 import tempfile
 import urllib.error
+import urllib.request
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -167,6 +168,36 @@ class VideoMediaTransferTests(unittest.TestCase):
         self.assertEqual(request.get_header("Content-type"), "video/custom")
         self.assertEqual(request.get_header("X-upload-token"), "signed")
         self.assertIsNone(request.get_header("Authorization"))
+
+    def test_empty_signed_headers_do_not_inject_content_type_at_handler_boundary(self):
+        class Response:
+            status = 204
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _size=-1):
+                return b""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.mp4"
+            source.write_bytes(b"video")
+            with patch.object(api, "_open_public_request", return_value=Response()) as opened:
+                api.upload_media_files(
+                    "https://uploads.example/signed", [source], 30,
+                    headers={}, method="PATCH+SIGNED",
+                )
+        request = opened.call_args.args[0]
+        handler = urllib.request.AbstractHTTPHandler()
+        handler.parent = type("Parent", (), {"addheaders": []})()
+        outgoing = handler.do_request_(request)
+        self.assertEqual(outgoing.get_method(), "PATCH+SIGNED")
+        self.assertFalse(any(name.lower() == "content-type" for name, _value in outgoing.header_items()))
+        self.assertFalse(any(name.lower() == "authorization" for name, _value in outgoing.header_items()))
 
     def test_download_deadline_after_fsync_cleans_output_before_promotion(self):
         class Clock:

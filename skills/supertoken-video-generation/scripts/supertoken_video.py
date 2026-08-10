@@ -395,7 +395,7 @@ def _upload_local_media(path, kind, args, resource_key):
         raise api.ApiResponseError("media completion response was invalid")
     url = completed_record.get("url")
     try:
-        api.validate_public_url(url, "media completion URL")
+        _validate_reference_url(url)
     except api.ApiUsageError as exc:
         raise api.ApiResponseError("media completion response was invalid") from exc
     return {"kind": kind, "url": url, "media_id": upload_id}
