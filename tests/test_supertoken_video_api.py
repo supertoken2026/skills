@@ -57,6 +57,22 @@ class VideoTransportTests(unittest.TestCase):
                 )
         self.assertNotIn(opaque_key, str(captured.exception))
 
+    def test_unparseable_http_error_does_not_echo_json_escaped_opaque_key(self):
+        opaque_key = "opaque-client-credential"
+        escaped_key = "opaque\\u002dclient\\u002dcredential"
+        error = urllib.error.HTTPError(
+            "https://api.example/v1/video/tasks", 400, "bad request", {},
+            io.BytesIO(escaped_key.encode("ascii")),
+        )
+        with patch.object(api._OPENER, "open", side_effect=error):
+            with self.assertRaises(api.ApiResponseError) as captured:
+                api.request_json(
+                    "POST", "https://api.example/v1/video/tasks", opaque_key, 30,
+                    {"model": "adobe-kling-3.0-720p"},
+                )
+        self.assertNotIn(opaque_key, str(captured.exception))
+        self.assertNotIn(escaped_key, str(captured.exception))
+
     def test_malformed_success_response_redacts_opaque_submitted_api_key(self):
         class Response:
             status = 200
