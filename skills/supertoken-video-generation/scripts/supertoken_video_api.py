@@ -5,6 +5,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -276,6 +277,12 @@ def _validate_public_url(url, label):
     return parsed
 
 
+def validate_public_url(url, label="URL") -> str:
+    """Validate a public HTTPS URL and return it unchanged."""
+    _validate_public_url(url, label)
+    return url
+
+
 def _numeric_ipv4_address(host):
     """Parse historical all-numeric IPv4 spellings that URL parsers treat as hostnames."""
     parts = host.split(".")
@@ -393,7 +400,16 @@ def _unique_output_path(destination_root, name, used_names):
     return destination_root / candidate.name
 
 
-def _stage_download(url, destination, timeout, resource_key=None):
+def _remaining_timeout(timeout, deadline, monotonic):
+    if deadline is None:
+        return timeout
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise ApiResponseError("operation deadline exceeded")
+    return min(timeout, remaining)
+
+
+def _stage_download(url, destination, timeout, resource_key=None, *, deadline=None, monotonic=time.monotonic):
     _validate_public_url(url, "result URL")
     request = urllib.request.Request(url, method="GET")
     if resource_key is not None:
@@ -401,7 +417,9 @@ def _stage_download(url, destination, timeout, resource_key=None):
     descriptor, raw_part = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".part", dir=destination.parent)
     part = Path(raw_part)
     try:
-        with os.fdopen(descriptor, "wb") as output, _open_public_request(request, timeout) as response:
+        with os.fdopen(descriptor, "wb") as output, _open_public_request(
+            request, _remaining_timeout(timeout, deadline, monotonic)
+        ) as response:
             length = header_value(response.headers, "Content-Length")
             try:
                 if length is not None and int(length) > MAX_MEDIA_BYTES:
@@ -410,6 +428,7 @@ def _stage_download(url, destination, timeout, resource_key=None):
                 pass
             total = 0
             while True:
+                _remaining_timeout(timeout, deadline, monotonic)
                 chunk = response.read(min(CHUNK_SIZE, MAX_MEDIA_BYTES - total + 1))
                 if not isinstance(chunk, (bytes, bytearray)):
                     raise ApiResponseError("could not read video download")
@@ -432,7 +451,10 @@ def _stage_download(url, destination, timeout, resource_key=None):
         raise
 
 
-def download_video_items(items, output_dir, timeout, resource_key=None) -> list[dict]:
+def download_video_items(
+    items, output_dir, timeout, resource_key=None, *, output_path=None,
+    deadline=None, monotonic=time.monotonic,
+) -> list[dict]:
     """Download task result videos, then atomically promote their staged files."""
     _validate_timeout(timeout)
     if not isinstance(items, (list, tuple)) or not items:
@@ -440,6 +462,12 @@ def download_video_items(items, output_dir, timeout, resource_key=None) -> list[
     if resource_key is not None and (not isinstance(resource_key, str) or not resource_key):
         raise ApiUsageError("resource_key must be a non-empty token")
     destination_root = Path(output_dir).expanduser()
+    fixed_destination = None
+    if output_path is not None:
+        if len(items) != 1:
+            raise ApiUsageError("output_path requires exactly one video result")
+        fixed_destination = Path(output_path).expanduser()
+        destination_root = fixed_destination.parent
     destination_root.mkdir(parents=True, exist_ok=True)
     if not destination_root.is_dir():
         raise ApiUsageError("output_dir must be a directory")
@@ -449,6 +477,7 @@ def download_video_items(items, output_dir, timeout, resource_key=None) -> list[
     used_names = set()
     try:
         for index, item in enumerate(items):
+            _remaining_timeout(timeout, deadline, monotonic)
             if not isinstance(item, dict) or not isinstance(item.get("url"), str):
                 raise ApiUsageError("each video result must contain a URL")
             url_auth = item.get("url_auth")
@@ -457,12 +486,15 @@ def download_video_items(items, output_dir, timeout, resource_key=None) -> list[
             key = resource_key if url_auth == "resource_api_key" else None
             if url_auth == "resource_api_key" and key is None:
                 raise ApiUsageError("resource_key is required for this video result")
-            destination = _unique_output_path(
+            destination = fixed_destination or _unique_output_path(
                 destination_root,
                 _safe_output_name(item.get("filename") or item.get("name"), index),
                 used_names,
             )
-            part, size = _stage_download(item["url"], destination, timeout, key)
+            part, size = _stage_download(
+                item["url"], destination, timeout, key,
+                deadline=deadline, monotonic=monotonic,
+            )
             staged.append((part, destination, size, item["url"]))
         for part, destination, _size, _url in staged:
             backup = None
