@@ -84,6 +84,34 @@ class VideoTransportTests(unittest.TestCase):
             api.parse_json_response(response)
         self.assertNotIn(opaque_key, str(captured.exception))
 
+    def test_malformed_success_response_does_not_echo_json_escaped_opaque_key(self):
+        class Response:
+            status = 200
+            headers = {}
+
+            def __init__(self, body):
+                self.body = io.BytesIO(body)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, size=-1):
+                return self.body.read(size)
+
+        opaque_key = "opaque-client-credential"
+        escaped_key = "opaque\\u002dclient\\u002dcredential"
+        with patch.object(api._OPENER, "open", return_value=Response(escaped_key.encode("ascii"))):
+            response = api.request_json(
+                "POST", "https://api.example/v1/video/tasks", opaque_key, 30,
+                {"model": "adobe-kling-3.0-720p"},
+            )
+        with self.assertRaises(api.ApiResponseError) as captured:
+            api.parse_json_response(response)
+        self.assertNotIn(escaped_key, str(captured.exception))
+
 
 class VideoMediaTransferTests(unittest.TestCase):
     def test_upload_rejects_alternate_numeric_loopback_urls_before_transport(self):
