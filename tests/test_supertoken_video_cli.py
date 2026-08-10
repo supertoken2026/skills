@@ -477,6 +477,32 @@ class VideoCliTests(unittest.TestCase):
             headers={"Content-Type": "image/png", "X-Upload-Token": "signed"}, method="PATCH+SIGNED",
         )
 
+    def test_completion_with_query_stops_before_model_task_create(self):
+        query_value = "completion-signed-value"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reference = Path(temp_dir) / "reference.png"
+            reference.write_bytes(b"image")
+            prepared = response({"data": [{
+                "id": "media_1", "method": "PUT", "upload_url": "https://uploads.example/one",
+                "headers": {},
+            }]})
+            completed = response({"data": [{
+                "id": "media_1",
+                "url": f"https://assets.example/reference.png?signature={query_value}",
+            }]})
+            created = response({"id": "task_1", "status": "queued"}, status=202)
+            with patch.object(cli.api, "request_json", side_effect=[prepared, completed, created]) as request, patch.object(cli.api, "upload_media_files", return_value=[]):
+                code, stdout, stderr = run_cli(
+                    ["generate", "--model", "leonardo-seedance-2.5-480p", "--prompt", "lake", "--duration", "4", "--reference-mode", "frame", "--image", str(reference)],
+                    {"SUPERTOKEN_API_KEY": "sk_test", "SUPERTOKEN_RESOURCE_API_KEY": "ak_test"},
+                )
+        self.assertEqual(code, 2)
+        self.assertEqual(request.call_count, 2)
+        self.assertIn("media completion response was invalid", stderr)
+        self.assertNotIn(query_value, stdout)
+        self.assertNotIn(query_value, stderr)
+        self.assertNotIn(query_value, json.dumps([call.args[4] for call in request.call_args_list]))
+
     def test_upload_requires_resource_key_and_reports_no_temporary_url(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = Path(temp_dir) / "source.png"
