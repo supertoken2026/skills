@@ -1,6 +1,6 @@
 # SuperToken Skills
 
-SuperToken 官方 Agent Skills。当前提供 GPT Image 2 图片生成与编辑能力，可在 Codex 和 Claude Code 中使用。
+SuperToken 官方 Agent Skills。当前提供 GPT Image 2 图片生成与编辑，以及 Adobe 和 Leonardo 视频生成能力，可在 Codex 和 Claude Code 中使用。
 
 [English](README.en.md)
 
@@ -92,6 +92,38 @@ python3 scripts/supertoken_image.py wait TASK_ID \
   --output ./skyline.png
 ```
 
+## 视频生成
+
+安装视频 Skill：
+
+```bash
+npx --yes skills@1.5.19 add supertoken2026/skills --skill supertoken-video-generation --agent codex claude-code --global
+```
+
+进入 `skills` CLI 输出的 `supertoken-video-generation` 安装目录后，以隐藏输入保存两个独立凭据：
+
+```bash
+python3 scripts/setup.py --with-resource-key
+```
+
+先查询当前账号可用模型。`GET /v1/models` 的结果优先于任何静态示例，必须从中选择 ID：
+
+```bash
+python3 scripts/supertoken_video.py models
+```
+
+最小生成、等待并保存示例（至少 4 秒；将模型 ID 替换为 `models` 的实际输出）：
+
+```bash
+python3 scripts/supertoken_video.py generate \
+  --model <id-from-models> \
+  --prompt "清晨湖面上缓慢升起的薄雾" \
+  --duration 4 \
+  --wait --output ./sunrise.mp4
+```
+
+视频使用 `SUPERTOKEN_API_KEY`（`sk-...` 模型 Token）查询模型和创建任务；`SUPERTOKEN_RESOURCE_API_KEY`（`ak_...` 资源 Key）用于本地素材上传、任务查询、等待，以及仅在 `url_auth: resource_api_key` 时下载临时结果 URL。详见 [视频 API 参考](skills/supertoken-video-generation/references/video-api.md)。
+
 ## 注意事项
 
 - `SUPERTOKEN_API_KEY` 是 `sk-...` 模型 Token，用于生成、编辑、模型列表和异步创建。
@@ -123,6 +155,8 @@ npx --yes skills@1.5.19 update -p supertoken-gpt-image-2
 ## 详细参考
 
 [GPT Image 2 API 参考](skills/supertoken-gpt-image-2/references/gpt-image-2-api.md) 说明端点映射、高级参数、限制和旧版基址行为。
+
+[视频 API 参考](skills/supertoken-video-generation/references/video-api.md) 说明统一视频任务、模型限制、上传、轮询和临时结果下载。
 
 ## 支持
 

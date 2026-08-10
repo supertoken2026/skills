@@ -1,6 +1,6 @@
 # SuperToken Skills
 
-SuperToken Agent Skills currently provides GPT Image 2 image generation and editing for Codex and Claude Code.
+SuperToken Agent Skills provides GPT Image 2 image generation and editing, plus Adobe and Leonardo video generation, for Codex and Claude Code.
 
 [中文](README.md)
 
@@ -92,6 +92,38 @@ python3 scripts/supertoken_image.py wait TASK_ID \
   --output ./skyline.png
 ```
 
+## Video generation
+
+Install the video Skill:
+
+```bash
+npx --yes skills@1.5.19 add supertoken2026/skills --skill supertoken-video-generation --agent codex claude-code --global
+```
+
+In the installed `supertoken-video-generation` directory reported by the `skills` CLI, save the two separate credentials through hidden prompts:
+
+```bash
+python3 scripts/setup.py --with-resource-key
+```
+
+List the models available to this account first. `GET /v1/models` wins over every static example, so choose an ID only from its response:
+
+```bash
+python3 scripts/supertoken_video.py models
+```
+
+Minimum create, wait, and save example (at least four seconds; replace the model ID with an actual `models` result):
+
+```bash
+python3 scripts/supertoken_video.py generate \
+  --model <id-from-models> \
+  --prompt "Morning mist slowly rising from a quiet lake" \
+  --duration 4 \
+  --wait --output ./sunrise.mp4
+```
+
+Video uses `SUPERTOKEN_API_KEY` (model Token, `sk-...`) for model discovery and task creation. `SUPERTOKEN_RESOURCE_API_KEY` (resource Key, `ak_...`) is for local media upload, task reads, waits, and a temporary result URL only when `url_auth` is `resource_api_key`. See the [video API reference](skills/supertoken-video-generation/references/video-api.md).
+
 ## Notes
 
 - `SUPERTOKEN_API_KEY` is the model Token (`sk-...`) for generation, edit, model listing, and async creation.
@@ -123,6 +155,8 @@ An unversioned installation installed from the default branch can update normall
 ## Reference
 
 See the [GPT Image 2 API reference](skills/supertoken-gpt-image-2/references/gpt-image-2-api.md) for endpoint mapping, advanced parameters, limits, and legacy base behavior.
+
+See the [video API reference](skills/supertoken-video-generation/references/video-api.md) for unified video tasks, model constraints, upload, polling, and temporary result downloads.
 
 ## Support
 
