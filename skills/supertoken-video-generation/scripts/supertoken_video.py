@@ -179,6 +179,8 @@ def _validate_model_constraints(args, references):
         variant = _VEO.fullmatch(args.model).group(1)
         if duration not in {4, 6, 8}:
             raise api.ApiUsageError("Veo 3.1 duration must be 4, 6, or 8 seconds")
+        if mode not in {None, "frame", "images"}:
+            raise api.ApiUsageError("Veo 3.1 supports frame or standard images mode")
         if mode == "frame":
             if len(references) > 2 or any(item[0] != "image" for item in references):
                 raise api.ApiUsageError("Veo 3.1 frame supports up to two images")

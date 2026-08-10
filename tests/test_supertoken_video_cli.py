@@ -212,6 +212,19 @@ class VideoCliTests(unittest.TestCase):
                         args, [{"kind": "image", "url": "https://assets.example/frame.png"}]
                     )
 
+    def test_veo_rejects_media_mode_for_text_only_fast_and_standard(self):
+        for model, duration in (
+            ("adobe-veo-3.1-fast-720p", "4"),
+            ("adobe-veo-3.1-standard-720p", "6"),
+        ):
+            with self.subTest(model=model):
+                args = cli.parse_args([
+                    "generate", "--model", model, "--prompt", "lake",
+                    "--duration", duration, "--reference-mode", "media",
+                ])
+                with self.assertRaises(api.ApiUsageError):
+                    cli.build_task_payload(args, [])
+
     def test_wait_polls_with_resource_key_and_downloads_only_protected_urls(self):
         queued = api.ApiResponse(200, {"Retry-After": "2"}, b'{"id":"task_1","status":"queued"}')
         succeeded = api.ApiResponse(200, {}, b'{"id":"task_1","status":"succeeded","result":{"videos":[{"url":"https://assets.example/a.mp4","url_auth":"resource_api_key","filename":"a.mp4"}]}}')
