@@ -220,8 +220,12 @@ def _validate_model_constraints(args, references):
 def build_task_payload(args, references) -> dict:
     _validate_generate_args(args)
     input_data = {"prompt": args.prompt}
-    if references:
-        input_data["reference_mode"] = args.reference_mode
+    reference_mode = args.reference_mode
+    is_veo = _model_kind(args.model) == "veo"
+    if is_veo and not references and reference_mode is None:
+        reference_mode = "frame"
+    if references or (is_veo and reference_mode == "frame"):
+        input_data["reference_mode"] = reference_mode
     for kind, singular, plural in (
         ("image", "image", "reference_images"),
         ("video", "video", "reference_videos"),
@@ -229,9 +233,12 @@ def build_task_payload(args, references) -> dict:
     ):
         urls = [{"url": item["url"]} for item in references if item["kind"] == kind]
         if urls:
-            input_data[singular] = urls[0]
-            if len(urls) > 1:
-                input_data[plural] = urls[1:]
+            if kind == "image" and reference_mode == "images":
+                input_data[plural] = urls
+            else:
+                input_data[singular] = urls[0]
+                if len(urls) > 1:
+                    input_data[plural] = urls[1:]
     payload = {
         "model": args.model,
         "operation": "generation",
