@@ -45,9 +45,8 @@ class _ArgumentParser(argparse.ArgumentParser):
         raise api.ApiUsageError("invalid command line arguments")
 
 
-def _common_options(parser, key_name):
+def _common_options(parser):
     parser.add_argument("--base-url")
-    parser.add_argument(key_name)
 
 
 def parse_args(argv=None):
@@ -56,12 +55,12 @@ def parse_args(argv=None):
 
     models = subparsers.add_parser("models")
     models.add_argument("--all", action="store_true")
-    _common_options(models, "--api-key")
+    _common_options(models)
 
     upload = subparsers.add_parser("upload")
     upload.add_argument("--file", required=True)
     upload.add_argument("--kind", choices=("image", "video", "audio"), required=True)
-    _common_options(upload, "--resource-api-key")
+    _common_options(upload)
 
     generate = subparsers.add_parser("generate")
     generate.add_argument("--model", required=True)
@@ -77,18 +76,17 @@ def parse_args(argv=None):
     generate.add_argument("--idempotency-key")
     generate.add_argument("--wait", action="store_true")
     generate.add_argument("--output")
-    _common_options(generate, "--api-key")
-    generate.add_argument("--resource-api-key")
+    _common_options(generate)
 
     task = subparsers.add_parser("task")
     task.add_argument("task_id")
-    _common_options(task, "--resource-api-key")
+    _common_options(task)
 
     wait = subparsers.add_parser("wait")
     wait.add_argument("task_id")
     wait.add_argument("--output", required=True)
     wait.add_argument("--wait-timeout", type=float, default=WAIT_TIMEOUT)
-    _common_options(wait, "--resource-api-key")
+    _common_options(wait)
     return parser.parse_args(argv)
 
 
@@ -310,13 +308,13 @@ def _base_url(args):
 
 
 def _model_key(args):
-    key = getattr(args, "_model_key", None) or get_model_key(args.api_key)
+    key = getattr(args, "_model_key", None) or get_model_key()
     args._model_key = key
     return key
 
 
 def _resource_key(args):
-    key = getattr(args, "_resource_key", None) or get_resource_key(args.resource_api_key)
+    key = getattr(args, "_resource_key", None) or get_resource_key()
     args._resource_key = key
     return key
 
@@ -440,6 +438,8 @@ def create_task(args) -> dict:
     model_key = _model_key(args)
     if args.wait:
         _resource_key(args)
+    if args.model not in _live_model_ids(args, model_key):
+        raise api.ApiUsageError("selected model is not available in live inventory")
     references = _resolve_references(args)
     payload = build_task_payload(args, references)
     idempotency_key = args.idempotency_key or uuid.uuid4().hex
@@ -534,8 +534,7 @@ def _task_summary(task, *secrets):
     return result
 
 
-def _run_models(args):
-    model_key = _model_key(args)
+def _live_model_ids(args, model_key):
     response = api.request_json(
         "GET", api.endpoint_url(_base_url(args), "/v1/models"),
         model_key, HTTP_TIMEOUT,
@@ -544,7 +543,12 @@ def _run_models(args):
     items = data.get("data")
     if not isinstance(items, list):
         raise api.ApiResponseError("models response was invalid")
-    models = [item["id"] for item in items if isinstance(item, dict) and isinstance(item.get("id"), str)]
+    return [item["id"] for item in items if isinstance(item, dict) and isinstance(item.get("id"), str)]
+
+
+def _run_models(args):
+    model_key = _model_key(args)
+    models = _live_model_ids(args, model_key)
     if not args.all:
         models = [model for model in models if _model_kind(model) is not None]
     print(json.dumps({"models": [api.sanitize_diagnostic(model, model_key) for model in models]}, ensure_ascii=True))
@@ -567,7 +571,6 @@ def main(argv=None) -> int:
         return 2
     except SystemExit as exc:
         return int(exc.code) if isinstance(exc.code, int) else 2
-    secrets = [value for value in (getattr(args, "api_key", None), getattr(args, "resource_api_key", None)) if isinstance(value, str)]
     try:
         if args.command == "models":
             _run_models(args)
@@ -591,7 +594,7 @@ def main(argv=None) -> int:
             print(json.dumps(summary, ensure_ascii=True))
         return 0
     except (ConfigError, api.ApiUsageError, api.ApiResponseError, ValueError) as exc:
-        print(api.sanitize_diagnostic(str(exc), *secrets), file=sys.stderr)
+        print(api.sanitize_diagnostic(str(exc), *_summary_secrets(args)), file=sys.stderr)
         return 2
 
 
