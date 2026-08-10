@@ -189,6 +189,29 @@ class VideoCliTests(unittest.TestCase):
                     self.assertEqual(code, 2)
         request.assert_not_called()
 
+    def test_parser_errors_do_not_echo_literal_or_escaped_key_shaped_arguments(self):
+        values = ("sk_parser_sentinel", "sk\\u005fparser\\u005fsentinel")
+        with patch.object(cli.api, "request_json") as request:
+            for value in values:
+                with self.subTest(value=value):
+                    code, stdout, stderr = run_cli(["wait", "task_1", "--output", "a.mp4", "--api-key", value])
+                    self.assertEqual(code, 2)
+                    self.assertEqual(stdout, "")
+                    self.assertNotIn(value, stderr)
+                    self.assertNotIn("sk_parser", stderr)
+        request.assert_not_called()
+
+    def test_task_rejects_non_finite_progress_before_json_output(self):
+        with patch.object(cli.api, "request_json") as request:
+            for progress in (float("nan"), float("inf"), float("-inf")):
+                with self.subTest(progress=progress):
+                    request.return_value = response({"id": "task_1", "status": "queued", "progress": progress})
+                    code, stdout, stderr = run_cli(["task", "task_1"], {"SUPERTOKEN_RESOURCE_API_KEY": "ak_test"})
+                    self.assertEqual(code, 2)
+                    self.assertEqual(stdout, "")
+                    self.assertNotIn("NaN", stderr)
+                    self.assertNotIn("Infinity", stderr)
+
     def test_read_task_uses_resource_key_and_never_prints_result_urls(self):
         task = response({"id": "task_1", "status": "succeeded", "result": {"videos": [{"url": "https://assets.example/a.mp4?token=secret"}]}})
         with patch.object(cli.api, "request_json", return_value=task) as request:
