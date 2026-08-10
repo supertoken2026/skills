@@ -9,7 +9,7 @@ Resolve the absolute-at-runtime directory containing this `SKILL.md` as `SKILL_D
 
 ## Start With Models
 
-`models --all` is mandatory before choosing an ID: it returns the raw live output of `GET /v1/models`, which is the account authority and wins over static examples. Default `models` is known-family convenience filtering only; it can omit a currently entitled ID and must not be used for selection.
+`models --all` is mandatory before choosing an ID: it returns the raw live account inventory of `GET /v1/models`, which is the authority and wins over static examples. The inventory can include non-video IDs, such as image models; select an Adobe or Leonardo video model from that result. Default `models` is known-family convenience filtering only; it can omit a currently entitled ID and must not be used for selection.
 
 ```bash
 python3 "$SKILL_DIR/scripts/setup.py" --with-resource-key

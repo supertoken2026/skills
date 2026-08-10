@@ -1,6 +1,6 @@
 # SuperToken Video API Reference
 
-本参考对应 `scripts/supertoken_video.py`。选择前必须运行 `models --all`，取得 `GET /v1/models` 的原始实时输出；它始终优先于下表的静态已知 ID 和模型族，静态列表不能证明当前账号可用。默认 `models` 仅按已知模型族做便利过滤，可能遗漏当前账号已有权限的 ID，不能用于选择。
+本参考对应 `scripts/supertoken_video.py`。选择前必须运行 `models --all`，取得 `GET /v1/models` 的原始实时账号清单；它始终优先于下表的静态已知 ID 和模型族，静态列表不能证明当前账号可用。清单也可能包含非视频 ID（例如图片模型），只能从中选择 Adobe 或 Leonardo 视频模型。默认 `models` 仅按已知模型族做便利过滤，可能遗漏当前账号已有权限的 ID，不能用于选择。
 
 ## 端点与密钥
 
@@ -20,7 +20,7 @@
 | 渠道 | 静态已知 ID / 模型族 | 时长 | 画幅 | 参考模式 | 音频 |
 | --- | --- | --- | --- | --- | --- |
 | Adobe Kling 3.0 | `adobe-kling-3.0-{720p,1080p}`、`adobe-kling-3.0-omni-{720p,1080p}` | 3-15 秒 | `16:9`、`9:16` | 服务端校验 | 可用 `--no-audio` |
-| Adobe Veo 3.1 | `adobe-veo-3.1-{standard,fast}-{720p,1080p}` | 4、6、8 秒 | Standard + images 仅 8 秒、`16:9` | 有参考时仅 `images`，仅图片 | 可用 `--no-audio` |
+| Adobe Veo 3.1 | `adobe-veo-3.1-{standard,fast}-{720p,1080p}` | 4、6、8 秒 | Standard 的 `images` 仅 8 秒、`16:9` | Standard/Fast: `frame` 0-2 张图片；Standard: `images` 1-3 张图片 | 可用 `--no-audio` |
 | Adobe Seedance 2.0 | `adobe-seedance-2.0-{480p,720p}`；`adobe-seedance-*` 为族 | 4-15 秒 | 服务端校验 | `frame` 或 `media` | 可用 `--no-audio` |
 | Leonardo Seedance 2.0 | `leonardo-seedance-2.0-*`、`leonardo-seedance-2.0-fast-*` | 4-15 秒 | 服务端校验 | 仅 `media` | 可用 `--no-audio` |
 | Leonardo Seedance 2.5 | `leonardo-seedance-2.5-{480p,720p}` | 4-30 秒 | 服务端校验 | `frame` 或 `media` | 可用 `--no-audio` |
@@ -38,7 +38,7 @@
 
 # English
 
-This reference covers `scripts/supertoken_video.py`. Run `models --all` before every selection to obtain the raw live output of `GET /v1/models`; it is authoritative for account entitlement and wins over every static ID or family below. Default `models` is known-family convenience filtering only and can omit an entitled ID, so it is not a selection command.
+This reference covers `scripts/supertoken_video.py`. Run `models --all` before every selection to obtain the raw live account inventory of `GET /v1/models`; it is authoritative for account entitlement and wins over every static ID or family below. The inventory can include non-video IDs such as image models, so select only an Adobe or Leonardo video model from it. Default `models` is known-family convenience filtering only and can omit an entitled ID, so it is not a selection command.
 
 ## Endpoints and keys
 
@@ -58,7 +58,7 @@ The upload protocol is: `POST /v1/media/uploads`, send the immutable local file 
 | Provider | Static known ID or family | Duration | Aspect ratio | Reference mode | Audio |
 | --- | --- | --- | --- | --- | --- |
 | Adobe Kling 3.0 | `adobe-kling-3.0-{720p,1080p}`, `adobe-kling-3.0-omni-{720p,1080p}` | 3-15 s | `16:9`, `9:16` | server validation | `--no-audio` allowed |
-| Adobe Veo 3.1 | `adobe-veo-3.1-{standard,fast}-{720p,1080p}` | 4, 6, or 8 s | Standard images: 8 s, `16:9` | references require image-only `images` | `--no-audio` allowed |
+| Adobe Veo 3.1 | `adobe-veo-3.1-{standard,fast}-{720p,1080p}` | 4, 6, or 8 s | Standard `images`: 8 s, `16:9` | Standard/Fast `frame`: 0-2 images; Standard `images`: 1-3 images | `--no-audio` allowed |
 | Adobe Seedance 2.0 | `adobe-seedance-2.0-{480p,720p}`; `adobe-seedance-*` is a family | 4-15 s | server validation | `frame` or `media` | `--no-audio` allowed |
 | Leonardo Seedance 2.0 | `leonardo-seedance-2.0-*`, `leonardo-seedance-2.0-fast-*` | 4-15 s | server validation | `media` only | `--no-audio` allowed |
 | Leonardo Seedance 2.5 | `leonardo-seedance-2.5-{480p,720p}` | 4-30 s | server validation | `frame` or `media` | `--no-audio` allowed |

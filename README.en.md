@@ -106,7 +106,7 @@ In the installed `supertoken-video-generation` directory reported by the `skills
 python3 scripts/setup.py --with-resource-key
 ```
 
-List the complete live model entitlement first. `models --all` returns the raw live output of `GET /v1/models`, which wins over every static example, so choose an ID only from that response. Default `models` is known-family convenience filtering and must not be used for selection:
+List the complete live model entitlement first. `models --all` returns the raw live account inventory of `GET /v1/models`, which wins over every static example. The inventory can include non-video IDs such as image models, so select only an Adobe or Leonardo video model from it. Default `models` is known-family convenience filtering and must not be used for selection:
 
 ```bash
 python3 scripts/supertoken_video.py models --all
