@@ -8,7 +8,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from supertoken_video_config import normalize_base_url
@@ -25,6 +25,9 @@ class ApiResponse:
     status: int
     headers: dict
     body: bytes
+    _diagnostic_secrets: tuple[str, ...] = field(
+        default=(), repr=False, compare=False
+    )
 
 
 class ApiUsageError(ValueError):
@@ -210,7 +213,7 @@ def _open_request(request, timeout, *, secrets=()) -> ApiResponse:
         raise ApiResponseError(
             f"SuperToken request failed (HTTP {status}): {sanitize_diagnostic(body, *secrets)}"
         )
-    return ApiResponse(status, headers, body)
+    return ApiResponse(status, headers, body, tuple(secrets))
 
 
 def request_json(method, url, api_key, timeout, payload=None, headers=None) -> ApiResponse:
@@ -240,14 +243,16 @@ def request_json(method, url, api_key, timeout, payload=None, headers=None) -> A
     return _open_request(request, timeout, secrets=(api_key,))
 
 
-def parse_json_response(response: ApiResponse) -> dict:
+def parse_json_response(response: ApiResponse, secrets=()) -> dict:
     if not isinstance(response, ApiResponse):
         raise ApiUsageError("response must be an ApiResponse")
+    diagnostic_secrets = tuple(response._diagnostic_secrets) + tuple(secrets)
     try:
         value = json.loads(response.body)
     except (TypeError, UnicodeError, json.JSONDecodeError) as exc:
         raise ApiResponseError(
-            f"SuperToken returned invalid JSON (HTTP {response.status}): {sanitize_diagnostic(response.body)}"
+            "SuperToken returned invalid JSON "
+            f"(HTTP {response.status}): {sanitize_diagnostic(response.body, *diagnostic_secrets)}"
         ) from exc
     if not isinstance(value, dict):
         raise ApiResponseError("SuperToken returned JSON that was not an object")
