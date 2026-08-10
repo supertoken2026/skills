@@ -94,22 +94,22 @@ def _sanitize_text(value: str, secrets=()) -> str:
     return "".join(char for char in text if char == "\n" or 32 <= ord(char) < 127)
 
 
-def _sanitize_json(value, field_name=None):
+def _sanitize_json(value, secrets=(), field_name=None):
     if isinstance(field_name, str) and re.search(
         r"(?:key|token|secret|signature|sig|authorization|credential|url)", field_name, re.I
     ):
         return "[REDACTED]"
     if isinstance(value, dict):
         return {
-            _sanitize_text(str(key)): _sanitize_json(item, str(key))
+            _sanitize_text(str(key), secrets): _sanitize_json(item, secrets, str(key))
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_sanitize_json(item) for item in value]
-    return _sanitize_text(value) if isinstance(value, str) else value
+        return [_sanitize_json(item, secrets) for item in value]
+    return _sanitize_text(value, secrets) if isinstance(value, str) else value
 
 
-def sanitize_diagnostic(value) -> str:
+def sanitize_diagnostic(value, *secrets) -> str:
     """Return a bounded diagnostic that cannot disclose keys or signed URL data."""
     if isinstance(value, bytes):
         text = value.decode("utf-8", errors="replace")
@@ -120,8 +120,8 @@ def sanitize_diagnostic(value) -> str:
     try:
         decoded = json.loads(text)
     except (TypeError, json.JSONDecodeError):
-        return _sanitize_text(text)[:1000]
-    return json.dumps(_sanitize_json(decoded), ensure_ascii=True)[:1000]
+        return _sanitize_text(text, secrets)[:1000]
+    return json.dumps(_sanitize_json(decoded, secrets), ensure_ascii=True)[:1000]
 
 
 def _validate_timeout(timeout):
@@ -187,7 +187,7 @@ def _response_status(response):
         raise ApiResponseError("HTTP response had no valid status") from exc
 
 
-def _open_request(request, timeout) -> ApiResponse:
+def _open_request(request, timeout, *, secrets=()) -> ApiResponse:
     """Open one authenticated request; the opener never follows redirects."""
     try:
         with _OPENER.open(request, timeout=timeout) as response:
@@ -200,14 +200,16 @@ def _open_request(request, timeout) -> ApiResponse:
         finally:
             exc.close()
         raise ApiResponseError(
-            f"SuperToken request failed (HTTP {exc.code}): {sanitize_diagnostic(body)}"
+            f"SuperToken request failed (HTTP {exc.code}): {sanitize_diagnostic(body, *secrets)}"
         ) from None
     except (OSError, ValueError, urllib.error.URLError) as exc:
         raise ApiResponseError("SuperToken request could not be completed") from exc
     if 300 <= status < 400:
         raise ApiResponseError("SuperToken request was redirected and was not followed")
     if not 200 <= status < 300:
-        raise ApiResponseError(f"SuperToken request failed (HTTP {status}): {sanitize_diagnostic(body)}")
+        raise ApiResponseError(
+            f"SuperToken request failed (HTTP {status}): {sanitize_diagnostic(body, *secrets)}"
+        )
     return ApiResponse(status, headers, body)
 
 
@@ -235,7 +237,7 @@ def request_json(method, url, api_key, timeout, payload=None, headers=None) -> A
             request.add_unredirected_header(name, value)
         else:
             request.add_header(name, value)
-    return _open_request(request, timeout)
+    return _open_request(request, timeout, secrets=(api_key,))
 
 
 def parse_json_response(response: ApiResponse) -> dict:
@@ -267,13 +269,54 @@ def _validate_public_url(url, label):
         or port == 0
     ):
         raise ApiUsageError(f"{label} must be a clean absolute HTTPS URL")
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return parsed
+    address = _numeric_ipv4_address(host)
+    if address is None:
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return parsed
     if not address.is_global:
         raise ApiUsageError(f"{label} must not use a private or unsafe literal address")
     return parsed
+
+
+def _numeric_ipv4_address(host):
+    """Parse historical all-numeric IPv4 spellings that URL parsers treat as hostnames."""
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4:
+        return None
+    values = []
+    for part in parts:
+        if not part:
+            return None
+        if part.lower().startswith("0x"):
+            digits, base = part[2:], 16
+        elif len(part) > 1 and part.startswith("0"):
+            digits, base = part[1:], 8
+        else:
+            digits, base = part, 10
+        if not digits or not re.fullmatch(r"[0-9A-Fa-f]+", digits):
+            return None
+        try:
+            values.append(int(digits, base))
+        except ValueError:
+            return None
+    if len(values) == 1:
+        number = values[0]
+    else:
+        if values[0] > 255:
+            return None
+        shifts = {2: 24, 3: 16, 4: 8}
+        final_limit = 1 << shifts[len(values)]
+        if any(value > 255 for value in values[1:-1]) or values[-1] >= final_limit:
+            return None
+        number = values[0] << 24
+        for index, value in enumerate(values[1:-1], start=1):
+            number |= value << (24 - 8 * index)
+        number |= values[-1]
+    if not 0 <= number <= 0xFFFFFFFF:
+        return None
+    return ipaddress.IPv4Address(number)
 
 
 def _read_local_file(path, limit):
@@ -344,6 +387,16 @@ def _safe_output_name(value, index):
     return name
 
 
+def _unique_output_path(destination_root, name, used_names):
+    candidate = Path(name)
+    ordinal = 2
+    while candidate.name.casefold() in used_names:
+        candidate = Path(f"{Path(name).stem}-{ordinal}{Path(name).suffix}")
+        ordinal += 1
+    used_names.add(candidate.name.casefold())
+    return destination_root / candidate.name
+
+
 def _stage_download(url, destination, timeout, resource_key=None):
     _validate_public_url(url, "result URL")
     request = urllib.request.Request(url, method="GET")
@@ -397,6 +450,7 @@ def download_video_items(items, output_dir, timeout, resource_key=None) -> list[
     staged = []
     promoted = []
     backups = []
+    used_names = set()
     try:
         for index, item in enumerate(items):
             if not isinstance(item, dict) or not isinstance(item.get("url"), str):
@@ -407,7 +461,11 @@ def download_video_items(items, output_dir, timeout, resource_key=None) -> list[
             key = resource_key if url_auth == "resource_api_key" else None
             if url_auth == "resource_api_key" and key is None:
                 raise ApiUsageError("resource_key is required for this video result")
-            destination = destination_root / _safe_output_name(item.get("filename") or item.get("name"), index)
+            destination = _unique_output_path(
+                destination_root,
+                _safe_output_name(item.get("filename") or item.get("name"), index),
+                used_names,
+            )
             part, size = _stage_download(item["url"], destination, timeout, key)
             staged.append((part, destination, size, item["url"]))
         for part, destination, _size, _url in staged:
