@@ -11,7 +11,7 @@
 | 查询/轮询 | `GET /v1/video/tasks/{task_id}` | 资源 Key `ak_...` |
 | 本地素材 | `POST /v1/media/uploads` -> 预签名 `PUT` -> `POST /v1/media/uploads/complete` | 资源 Key `ak_...` |
 
-本地素材的三步上传必须全部成功，随后才把 complete 返回的 HTTPS URL 放进任务。创建使用 `Idempotency-Key`，不自动重试。结果 `result.videos[]` 的 URL 是临时地址；仅当 `url_auth: resource_api_key` 时下载附加资源 Key。
+本地素材的三步上传必须全部成功，随后才把 complete 返回的 HTTPS URL 放进任务。创建使用 `Idempotency-Key`，不自动重试。结果 `result.videos[]` 的 URL 是临时公网 HTTPS 地址：省略/`null` 或显式 `url_auth: none` 均不附加 Authorization；仅 `url_auth: resource_api_key` 下载附加资源 Key。
 
 ## 模型矩阵
 
@@ -49,7 +49,7 @@ This reference covers `scripts/supertoken_video.py`. Run `models --all` before e
 | Read or poll | `GET /v1/video/tasks/{task_id}` | resource Key `ak_...` |
 | Upload local media | prepare -> presigned `PUT` -> complete | resource Key `ak_...` |
 
-The upload protocol is: `POST /v1/media/uploads`, send the immutable local file to the returned presigned URL, then `POST /v1/media/uploads/complete`; only its confirmed HTTPS URL can be referenced. Creation uses `Idempotency-Key` and never retries automatically. `result.videos[]` URLs are temporary. Send the resource Key for a download only when `url_auth` is `resource_api_key`.
+The upload protocol is: `POST /v1/media/uploads`, send the immutable local file to the returned presigned URL, then `POST /v1/media/uploads/complete`; only its confirmed HTTPS URL can be referenced. Creation uses `Idempotency-Key` and never retries automatically. `result.videos[]` URLs are temporary public HTTPS URLs when `url_auth` is omitted, `null`, or explicit `none`; those downloads have no Authorization header. Only `url_auth: resource_api_key` adds the resource Key.
 
 ## Models
 

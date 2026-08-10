@@ -495,7 +495,7 @@ def download_video_items(
             if not isinstance(item, dict) or not isinstance(item.get("url"), str):
                 raise ApiUsageError("each video result must contain a URL")
             url_auth = item.get("url_auth")
-            if url_auth not in (None, "resource_api_key"):
+            if url_auth not in (None, "none", "resource_api_key"):
                 raise ApiUsageError("video result has an unsupported url_auth value")
             key = resource_key if url_auth == "resource_api_key" else None
             if url_auth == "resource_api_key" and key is None:

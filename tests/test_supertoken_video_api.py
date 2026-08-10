@@ -327,16 +327,70 @@ class VideoMediaTransferTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             with patch.object(
-                api, "_open_public_request", side_effect=[Response(b"first"), Response(b"second")]
+                api, "_open_public_request",
+                side_effect=[Response(b"first"), Response(b"second"), Response(b"third"), Response(b"fourth")],
             ) as opened:
                 api.download_video_items([
                     {"url": "https://cdn.example/public.mp4", "filename": "public.mp4"},
+                    {"url": "https://cdn.example/null.mp4", "filename": "null.mp4", "url_auth": None},
+                    {"url": "https://cdn.example/public.mp4?temporary=opaque", "filename": "explicit-none.mp4", "url_auth": "none"},
                     {"url": "https://cdn.example/private.mp4", "filename": "private.mp4", "url_auth": "resource_api_key"},
                 ], temp_dir, 30, "opaque-resource-key")
         first = opened.call_args_list[0].args[0]
         second = opened.call_args_list[1].args[0]
+        third = opened.call_args_list[2].args[0]
+        fourth = opened.call_args_list[3].args[0]
         self.assertIsNone(first.get_header("Authorization"))
-        self.assertEqual(second.get_header("Authorization"), "Bearer opaque-resource-key")
+        self.assertIsNone(second.get_header("Authorization"))
+        self.assertIsNone(third.get_header("Authorization"))
+        self.assertEqual(third.full_url, "https://cdn.example/public.mp4?temporary=opaque")
+        handler = urllib.request.AbstractHTTPHandler()
+        handler.parent = type("Parent", (), {"addheaders": []})()
+        outgoing = handler.do_request_(third)
+        self.assertFalse(any(name.lower() == "authorization" for name, _value in outgoing.header_items()))
+        self.assertEqual(fourth.get_header("Authorization"), "Bearer opaque-resource-key")
+
+    def test_download_explicit_none_does_not_require_a_resource_key(self):
+        class Response:
+            status = 200
+            headers = {}
+
+            def __init__(self, body):
+                self.stream = io.BytesIO(body)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, size=-1):
+                return self.stream.read(size)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(api, "_open_public_request", return_value=Response(b"public")) as opened:
+                api.download_video_items([
+                    {"url": "https://cdn.example/public.mp4", "filename": "public.mp4", "url_auth": "none"},
+                ], temp_dir, 30)
+        self.assertIsNone(opened.call_args.args[0].get_header("Authorization"))
+
+    def test_download_rejects_unknown_url_auth_before_transport(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(api, "_open_public_request") as opened:
+                with self.assertRaises(api.ApiUsageError):
+                    api.download_video_items([
+                        {"url": "https://cdn.example/video.mp4", "url_auth": "model_api_key"},
+                    ], temp_dir, 30)
+        opened.assert_not_called()
+
+    def test_download_rejects_resource_authorized_item_without_key_before_transport(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(api, "_open_public_request") as opened:
+                with self.assertRaises(api.ApiUsageError):
+                    api.download_video_items([
+                        {"url": "https://cdn.example/video.mp4", "url_auth": "resource_api_key"},
+                    ], temp_dir, 30)
+        opened.assert_not_called()
 
     def test_download_uses_unique_paths_for_colliding_server_filenames(self):
         class Response:
