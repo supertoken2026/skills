@@ -219,7 +219,9 @@ def request_json(method, url, api_key, timeout, payload=None, headers=None) -> A
     if not isinstance(api_key, str) or not api_key or any(char.isspace() for char in api_key):
         raise ApiUsageError("API key must be a non-empty token")
     try:
-        body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body = None if payload is None else json.dumps(
+            payload, ensure_ascii=False, allow_nan=False
+        ).encode("utf-8")
     except (TypeError, ValueError) as exc:
         raise ApiUsageError("JSON payload is not serializable") from exc
     request = urllib.request.Request(url, data=body, method=method.upper())
@@ -439,8 +441,11 @@ def _stage_download(url, destination, timeout, resource_key=None, *, deadline=No
                 if not chunk:
                     break
                 output.write(chunk)
+                _remaining_timeout(timeout, deadline, monotonic)
             output.flush()
+            _remaining_timeout(timeout, deadline, monotonic)
             os.fsync(output.fileno())
+            _remaining_timeout(timeout, deadline, monotonic)
         if total == 0:
             raise ApiResponseError("video download was empty")
         return part, total
@@ -498,6 +503,7 @@ def download_video_items(
             )
             staged.append((part, destination, size, item["url"]))
         for part, destination, _size, _url in staged:
+            _remaining_timeout(timeout, deadline, monotonic)
             backup = None
             if os.path.lexists(destination):
                 descriptor, raw_backup = tempfile.mkstemp(
@@ -507,8 +513,10 @@ def download_video_items(
                 backup = Path(raw_backup)
                 os.replace(destination, backup)
             backups.append((destination, backup))
+            _remaining_timeout(timeout, deadline, monotonic)
             os.replace(part, destination)
             promoted.append(destination)
+            _remaining_timeout(timeout, deadline, monotonic)
     except Exception:
         for part, _destination, _size, _url in staged:
             try:
