@@ -31,6 +31,30 @@ def response(payload, headers=None, status=200):
 
 
 class VideoCliTests(unittest.TestCase):
+    def build_payload(
+        self, model, duration, mode=None, image_count=0, video_count=0,
+        audio_count=0, aspect_ratio="16:9", no_audio=False,
+    ):
+        argv = [
+            "generate", "--model", model, "--prompt", "a calm lake",
+            "--duration", str(duration), "--aspect-ratio", aspect_ratio,
+        ]
+        if mode is not None:
+            argv.extend(["--reference-mode", mode])
+        if no_audio:
+            argv.append("--no-audio")
+        references = []
+        for kind, count in (
+            ("image", image_count),
+            ("video", video_count),
+            ("audio", audio_count),
+        ):
+            for index in range(count):
+                url = f"https://assets.example/{kind}-{index}.bin"
+                argv.extend([f"--{kind}", url])
+                references.append({"kind": kind, "url": url})
+        return cli.build_task_payload(cli.parse_args(argv), references)
+
     def test_models_filters_known_video_families_and_uses_model_token(self):
         result = api.ApiResponse(200, {}, json.dumps({"data": [
             {"id": "adobe-kling-3.0-720p"},
@@ -224,6 +248,151 @@ class VideoCliTests(unittest.TestCase):
                 ])
                 with self.assertRaises(api.ApiUsageError):
                     cli.build_task_payload(args, [])
+
+    def test_media_payload_uses_only_plural_video_and_audio_fields(self):
+        seedance = self.build_payload(
+            "adobe-seedance-2.0-480p", 4, "media", 1, 1, 1
+        )
+        self.assertEqual(
+            seedance["input"]["reference_videos"],
+            [{"url": "https://assets.example/video-0.bin"}],
+        )
+        self.assertEqual(
+            seedance["input"]["reference_audios"],
+            [{"url": "https://assets.example/audio-0.bin"}],
+        )
+        self.assertNotIn("video", seedance["input"])
+        self.assertNotIn("audio", seedance["input"])
+
+        h3 = self.build_payload("leonardo-minimax-h3-1440p", 5, "media", 1, 0, 1)
+        self.assertEqual(
+            h3["input"]["reference_audios"],
+            [{"url": "https://assets.example/audio-0.bin"}],
+        )
+        self.assertNotIn("audio", h3["input"])
+
+    def test_h3_frame_and_images_preserve_model_specific_image_order(self):
+        frame = self.build_payload("leonardo-minimax-h3-1440p", 5, "frame", 2)
+        self.assertEqual(frame["input"]["image"], {"url": "https://assets.example/image-0.bin"})
+        self.assertEqual(
+            frame["input"]["reference_images"],
+            [{"url": "https://assets.example/image-1.bin"}],
+        )
+
+        images = self.build_payload("leonardo-minimax-h3-1440p", 5, "images", 3)
+        self.assertEqual(images["input"]["image"], {"url": "https://assets.example/image-0.bin"})
+        self.assertEqual(
+            images["input"]["reference_images"],
+            [
+                {"url": "https://assets.example/image-1.bin"},
+                {"url": "https://assets.example/image-2.bin"},
+            ],
+        )
+
+    def test_kling_known_model_contract(self):
+        self.build_payload("adobe-kling-3.0-720p", 3, "frame")
+        self.build_payload("adobe-kling-3.0-omni-720p", 3, "images", 3)
+        for mode, images, videos, audios, aspect_ratio in (
+            ("images", 1, 0, 0, "16:9"),
+            ("media", 0, 0, 0, "16:9"),
+            ("frame", 3, 0, 0, "16:9"),
+            ("frame", 0, 1, 0, "16:9"),
+            ("frame", 1, 0, 0, "1:1"),
+        ):
+            with self.subTest(mode=mode, images=images, videos=videos, audios=audios):
+                with self.assertRaises(api.ApiUsageError):
+                    self.build_payload(
+                        "adobe-kling-3.0-720p", 3, mode, images, videos, audios,
+                        aspect_ratio,
+                    )
+        with self.assertRaises(api.ApiUsageError):
+            self.build_payload("adobe-kling-3.0-omni-720p", 3, "images", 4)
+
+    def test_adobe_seedance_known_model_contract(self):
+        self.build_payload("adobe-seedance-2.0-480p", 4, "frame", 2, aspect_ratio="21:9")
+        self.build_payload("adobe-seedance-2.0-480p", 4, "media", 8, 3, 1)
+        for mode, images, videos, audios, aspect_ratio in (
+            ("images", 0, 0, 0, "16:9"),
+            ("frame", 3, 0, 0, "16:9"),
+            ("media", 10, 0, 0, "16:9"),
+            ("media", 0, 4, 0, "16:9"),
+            ("media", 0, 0, 4, "16:9"),
+            ("media", 9, 3, 1, "16:9"),
+            ("frame", 1, 0, 0, "2:1"),
+        ):
+            with self.subTest(mode=mode, images=images, videos=videos, audios=audios):
+                with self.assertRaises(api.ApiUsageError):
+                    self.build_payload(
+                        "adobe-seedance-2.0-480p", 4, mode, images, videos, audios,
+                        aspect_ratio,
+                    )
+
+    def test_leonardo_seedance_20_known_model_contract(self):
+        self.build_payload("leonardo-seedance-2.0-480p", 4, "media", 4, 3, 1)
+        for mode, images, videos, audios, aspect_ratio in (
+            ("frame", 0, 0, 0, "16:9"),
+            ("media", 5, 0, 0, "16:9"),
+            ("media", 0, 4, 0, "16:9"),
+            ("media", 0, 0, 2, "16:9"),
+            ("media", 4, 3, 2, "16:9"),
+            ("media", 0, 0, 1, "16:9"),
+            ("media", 1, 0, 0, "2:1"),
+        ):
+            with self.subTest(mode=mode, images=images, videos=videos, audios=audios):
+                with self.assertRaises(api.ApiUsageError):
+                    self.build_payload(
+                        "leonardo-seedance-2.0-480p", 4, mode, images, videos, audios,
+                        aspect_ratio,
+                    )
+
+    def test_leonardo_seedance_25_known_model_contract(self):
+        self.build_payload("leonardo-seedance-2.5-480p", 4, "frame", 2, aspect_ratio="21:9")
+        self.build_payload("leonardo-seedance-2.5-480p", 4, "media", 30, 10, 10)
+        for mode, images, videos, audios, aspect_ratio in (
+            ("images", 0, 0, 0, "16:9"),
+            ("frame", 0, 0, 0, "16:9"),
+            ("frame", 3, 0, 0, "16:9"),
+            ("media", 31, 0, 0, "16:9"),
+            ("media", 0, 11, 0, "16:9"),
+            ("media", 0, 0, 11, "16:9"),
+            ("media", 0, 0, 1, "16:9"),
+            ("media", 1, 0, 0, "2:1"),
+        ):
+            with self.subTest(mode=mode, images=images, videos=videos, audios=audios):
+                with self.assertRaises(api.ApiUsageError):
+                    self.build_payload(
+                        "leonardo-seedance-2.5-480p", 4, mode, images, videos, audios,
+                        aspect_ratio,
+                    )
+
+    def test_h3_known_model_contract(self):
+        self.build_payload("leonardo-minimax-h3-1440p", 5, "frame", 2, aspect_ratio="21:9")
+        self.build_payload("leonardo-minimax-h3-1440p", 5, "images", 5)
+        self.build_payload("leonardo-minimax-h3-1440p", 5, "media", 5, 0, 3)
+        for mode, images, videos, audios, aspect_ratio, no_audio in (
+            ("frame", 0, 0, 0, "16:9", False),
+            ("frame", 3, 0, 0, "16:9", False),
+            ("images", 6, 0, 0, "16:9", False),
+            ("media", 0, 0, 1, "16:9", False),
+            ("media", 1, 0, 0, "16:9", False),
+            ("media", 1, 1, 1, "16:9", False),
+            ("media", 1, 0, 4, "16:9", False),
+            ("frame", 1, 0, 0, "2:1", False),
+            ("frame", 1, 0, 0, "16:9", True),
+        ):
+            with self.subTest(mode=mode, images=images, videos=videos, audios=audios):
+                with self.assertRaises(api.ApiUsageError):
+                    self.build_payload(
+                        "leonardo-minimax-h3-1440p", 5, mode, images, videos, audios,
+                        aspect_ratio, no_audio,
+                    )
+
+    def test_veo_rejects_unknown_aspect_ratio(self):
+        with self.assertRaises(api.ApiUsageError):
+            self.build_payload("adobe-veo-3.1-fast-720p", 4, aspect_ratio="1:1")
+
+    def test_unknown_live_model_skips_static_reference_limits(self):
+        self.build_payload("adobe-nextgen-video-2026", 1, "frame", 3)
 
     def test_wait_polls_with_resource_key_and_downloads_only_protected_urls(self):
         queued = api.ApiResponse(200, {"Retry-After": "2"}, b'{"id":"task_1","status":"queued"}')
