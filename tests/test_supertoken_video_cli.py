@@ -120,6 +120,51 @@ class VideoCliTests(unittest.TestCase):
         self.assertNotIn("provider_options", payload)
         self.assertEqual(payload["output"], {"duration": 4, "aspect_ratio": "16:9", "generate_audio": True})
 
+    def test_images_mode_uses_only_reference_images_for_veo_and_kling(self):
+        image_urls = [
+            "https://assets.example/first.png",
+            "https://assets.example/second.png",
+        ]
+        for model, duration in (
+            ("adobe-veo-3.1-standard-720p", "8"),
+            ("adobe-kling-3.0-omni-720p", "3"),
+        ):
+            with self.subTest(model=model):
+                args = cli.parse_args([
+                    "generate", "--model", model, "--prompt", "a calm lake",
+                    "--duration", duration, "--reference-mode", "images",
+                    "--image", image_urls[0], "--image", image_urls[1],
+                ])
+                payload = cli.build_task_payload(
+                    args, [{"kind": "image", "url": url} for url in image_urls]
+                )
+                self.assertEqual(
+                    payload["input"]["reference_images"],
+                    [{"url": url} for url in image_urls],
+                )
+                self.assertNotIn("image", payload["input"])
+
+    def test_veo_text_generation_defaults_to_frame_reference_mode(self):
+        for model, duration in (
+            ("adobe-veo-3.1-fast-720p", "4"),
+            ("adobe-veo-3.1-standard-720p", "6"),
+        ):
+            with self.subTest(model=model):
+                args = cli.parse_args([
+                    "generate", "--model", model, "--prompt", "a calm lake",
+                    "--duration", duration,
+                ])
+                payload = cli.build_task_payload(args, [])
+                self.assertEqual(payload["input"]["reference_mode"], "frame")
+
+    def test_non_veo_text_generation_omits_reference_mode(self):
+        args = cli.parse_args([
+            "generate", "--model", "adobe-kling-3.0-720p", "--prompt", "a calm lake",
+            "--duration", "3",
+        ])
+        payload = cli.build_task_payload(args, [])
+        self.assertNotIn("reference_mode", payload["input"])
+
     def test_veo_frame_accepts_image_for_fast_and_standard(self):
         for model, duration in (
             ("adobe-veo-3.1-fast-720p", "4"),

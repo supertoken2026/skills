@@ -26,7 +26,7 @@
 | Leonardo Seedance 2.5 | `leonardo-seedance-2.5-{480p,720p}` | 4-30 秒 | 服务端校验 | `frame` 或 `media` | 可用 `--no-audio` |
 | Leonardo MiniMax H3 | `leonardo-minimax-h3-1440p` | 5-15 秒 | 服务端校验 | 服务端校验 | 固定开启，拒绝 `--no-audio` |
 
-`frame` 要求恰好一个图片；`images` 要求至少一个图片。参考素材存在时必须明确 `--reference-mode frame|images|media`。模型族范围仅用于本地预校验，不生成或猜测具体 ID。
+除 Veo 外，`frame` 要求恰好一个图片；Veo 的 `frame` 接受 0-2 张图片，且无图片的文本生成默认发送 `reference_mode: frame`。`frame` 的第一张 `--image` 映射到 `input.image`（起始帧），Veo 的可选第二张映射到 `input.reference_images[]`（结束帧）。`images` 的所有 `--image` 都映射到 `input.reference_images[]`，并省略 `input.image`。参考素材存在时必须明确 `--reference-mode frame|images|media`。模型族范围仅用于本地预校验，不生成或猜测具体 ID。
 
 ## 任务与错误
 
@@ -64,7 +64,7 @@ The upload protocol is: `POST /v1/media/uploads`, send the immutable local file 
 | Leonardo Seedance 2.5 | `leonardo-seedance-2.5-{480p,720p}` | 4-30 s | server validation | `frame` or `media` | `--no-audio` allowed |
 | Leonardo MiniMax H3 | `leonardo-minimax-h3-1440p` | 5-15 s | server validation | server validation | always on; rejects `--no-audio` |
 
-`frame` requires exactly one image, while `images` requires one or more images. Specify `--reference-mode` whenever references are present. Family ranges support only local preflight validation; they do not create entitlement or invent an ID.
+Except for Veo, `frame` requires exactly one image. Veo `frame` accepts 0-2 images and text-only generation defaults to `reference_mode: frame`. The first `--image` in `frame` maps to `input.image` (the start frame); Veo's optional second image maps to `input.reference_images[]` (the end frame). Every `--image` in `images` maps to `input.reference_images[]`, with `input.image` omitted. Specify `--reference-mode` whenever references are present. Family ranges support only local preflight validation; they do not create entitlement or invent an ID.
 
 ## Task fields, states, and errors
 
