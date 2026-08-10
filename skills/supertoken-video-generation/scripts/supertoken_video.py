@@ -245,6 +245,25 @@ def _base_url(args):
     return normalize_base_url(args.base_url or DEFAULT_BASE_URL)
 
 
+def _model_key(args):
+    key = getattr(args, "_model_key", None) or get_model_key(args.api_key)
+    args._model_key = key
+    return key
+
+
+def _resource_key(args):
+    key = getattr(args, "_resource_key", None) or get_resource_key(args.resource_api_key)
+    args._resource_key = key
+    return key
+
+
+def _summary_secrets(args):
+    return tuple(
+        value for value in (getattr(args, "_model_key", None), getattr(args, "_resource_key", None))
+        if isinstance(value, str) and value
+    )
+
+
 def _parse_response(response, label):
     value = api.parse_json_response(response)
     if not isinstance(value, dict):
@@ -284,7 +303,7 @@ def _resolve_references(args):
             resolved.append({"kind": kind, "url": _validate_reference_url(value)})
             continue
         if resource_key is None:
-            resource_key = get_resource_key(args.resource_api_key)
+            resource_key = _resource_key(args)
         resolved.append(_upload_local_media(value, kind, args, resource_key))
     return resolved
 
@@ -309,9 +328,9 @@ def _task_from_response(response, expected_id=None):
 
 def create_task(args) -> dict:
     _validate_generate_args(args)
-    model_key = get_model_key(args.api_key)
+    model_key = _model_key(args)
     if args.wait:
-        args._resource_key = get_resource_key(args.resource_api_key)
+        _resource_key(args)
     references = _resolve_references(args)
     payload = build_task_payload(args, references)
     idempotency_key = args.idempotency_key or uuid.uuid4().hex
@@ -338,7 +357,7 @@ def read_task(task_id, args) -> dict:
     task_id = _validate_task_id(task_id)
     response = api.request_json(
         "GET", api.endpoint_url(_base_url(args), f"/v1/video/tasks/{task_id}"),
-        getattr(args, "_resource_key", None) or get_resource_key(args.resource_api_key),
+        _resource_key(args),
         _request_timeout(args),
     )
     args._last_response_headers = response.headers
@@ -377,7 +396,7 @@ def wait_for_task(task_id, args) -> dict:
         task = read_task(task_id, args)
         status = task["status"]
         if status == "succeeded":
-            resource_key = getattr(args, "_resource_key", None) or get_resource_key(args.resource_api_key)
+            resource_key = _resource_key(args)
             remaining = _request_timeout(args)
             output = Path(args.output).expanduser()
             saved = api.download_video_items(
@@ -396,10 +415,10 @@ def wait_for_task(task_id, args) -> dict:
         time.sleep(min(delay, remaining))
 
 
-def _task_summary(task):
+def _task_summary(task, *secrets):
     result = {
-        "task_id": api.sanitize_diagnostic(task["id"]),
-        "status": api.sanitize_diagnostic(task["status"]),
+        "task_id": api.sanitize_diagnostic(task["id"], *secrets),
+        "status": api.sanitize_diagnostic(task["status"], *secrets),
     }
     if isinstance(task.get("progress"), (int, float)):
         result["progress"] = task["progress"]
@@ -407,9 +426,10 @@ def _task_summary(task):
 
 
 def _run_models(args):
+    model_key = _model_key(args)
     response = api.request_json(
         "GET", api.endpoint_url(_base_url(args), "/v1/models"),
-        get_model_key(args.api_key), HTTP_TIMEOUT,
+        model_key, HTTP_TIMEOUT,
     )
     data = _parse_response(response, "models")
     items = data.get("data")
@@ -418,15 +438,16 @@ def _run_models(args):
     models = [item["id"] for item in items if isinstance(item, dict) and isinstance(item.get("id"), str)]
     if not args.all:
         models = [model for model in models if _model_kind(model) is not None]
-    print(json.dumps({"models": [api.sanitize_diagnostic(model) for model in models]}, ensure_ascii=True))
+    print(json.dumps({"models": [api.sanitize_diagnostic(model, model_key) for model in models]}, ensure_ascii=True))
 
 
 def _run_upload(args):
     source = Path(args.file).expanduser()
     if not source.is_file():
         raise api.ApiUsageError("media file does not exist")
-    item = _upload_local_media(source, args.kind, args, get_resource_key(args.resource_api_key))
-    print(json.dumps({"kind": args.kind, "media_id": api.sanitize_diagnostic(item["media_id"])}, ensure_ascii=True))
+    resource_key = _resource_key(args)
+    item = _upload_local_media(source, args.kind, args, resource_key)
+    print(json.dumps({"kind": args.kind, "media_id": api.sanitize_diagnostic(item["media_id"], resource_key)}, ensure_ascii=True))
 
 
 def main(argv=None) -> int:
@@ -445,19 +466,19 @@ def main(argv=None) -> int:
             _run_upload(args)
         elif args.command == "generate":
             task = create_task(args)
-            summary = _task_summary(task)
-            summary["idempotency_key"] = api.sanitize_diagnostic(args._idempotency_key)
+            summary = _task_summary(task, *_summary_secrets(args))
+            summary["idempotency_key"] = api.sanitize_diagnostic(args._idempotency_key, *_summary_secrets(args))
             if args.wait:
                 waited = wait_for_task(task["id"], args)
-                summary.update(_task_summary(waited["task"]))
-                summary["outputs"] = [{"path": api.sanitize_diagnostic(item["path"])} for item in waited["outputs"]]
+                summary.update(_task_summary(waited["task"], *_summary_secrets(args)))
+                summary["outputs"] = [{"path": api.sanitize_diagnostic(item["path"], *_summary_secrets(args))} for item in waited["outputs"]]
             print(json.dumps(summary, ensure_ascii=True))
         elif args.command == "task":
-            print(json.dumps(_task_summary(read_task(args.task_id, args)), ensure_ascii=True))
+            print(json.dumps(_task_summary(read_task(args.task_id, args), *_summary_secrets(args)), ensure_ascii=True))
         elif args.command == "wait":
             waited = wait_for_task(args.task_id, args)
-            summary = _task_summary(waited["task"])
-            summary["outputs"] = [{"path": api.sanitize_diagnostic(item["path"])} for item in waited["outputs"]]
+            summary = _task_summary(waited["task"], *_summary_secrets(args))
+            summary["outputs"] = [{"path": api.sanitize_diagnostic(item["path"], *_summary_secrets(args))} for item in waited["outputs"]]
             print(json.dumps(summary, ensure_ascii=True))
         return 0
     except (ConfigError, api.ApiUsageError, api.ApiResponseError, ValueError) as exc:

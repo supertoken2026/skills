@@ -61,6 +61,31 @@ class VideoCliTests(unittest.TestCase):
         self.assertNotIn("sk_server_secret", stdout)
         self.assertNotIn("sk_client_secret", stdout)
 
+    def test_success_summaries_redact_opaque_environment_credentials_echoed_by_server(self):
+        model_key = "opaque-model-credential"
+        model_response = api.ApiResponse(
+            200, {}, b'{"data":[{"id":"opaque\\u002dmodel\\u002dcredential"}]}'
+        )
+        with patch.object(cli.api, "request_json", return_value=model_response):
+            code, stdout, stderr = run_cli(
+                ["models", "--all"], {"SUPERTOKEN_API_KEY": model_key}
+            )
+        self.assertEqual(code, 0, stderr)
+        self.assertNotIn(model_key, stdout)
+        self.assertNotIn("opaque\\u002dmodel", stdout)
+
+        resource_key = "opaque-resource-credential"
+        task_response = api.ApiResponse(
+            200, {}, b'{"id":"opaque\\u002dresource\\u002dcredential","status":"queued"}'
+        )
+        with patch.object(cli.api, "request_json", return_value=task_response):
+            code, stdout, stderr = run_cli(
+                ["task", resource_key], {"SUPERTOKEN_RESOURCE_API_KEY": resource_key}
+            )
+        self.assertEqual(code, 0, stderr)
+        self.assertNotIn(resource_key, stdout)
+        self.assertNotIn("opaque\\u002dresource", stdout)
+
     def test_generate_uses_public_video_fields_and_requires_model_duration(self):
         args = cli.parse_args([
             "generate", "--model", "leonardo-seedance-2.5-480p", "--prompt", "a calm lake", "--duration", "4",
