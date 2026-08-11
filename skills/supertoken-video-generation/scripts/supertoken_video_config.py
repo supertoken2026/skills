@@ -92,7 +92,10 @@ def _credentials_path() -> Path:
 
 
 def _stored_key(environment_name: str) -> str | None:
-    path = _credentials_path()
+    try:
+        path = _credentials_path()
+    except RuntimeError:
+        return None
     try:
         values = dict(
             line.split("=", 1) for line in path.read_text(encoding="utf-8").splitlines()

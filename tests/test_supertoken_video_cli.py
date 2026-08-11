@@ -449,12 +449,15 @@ class VideoCliTests(unittest.TestCase):
         self.assertNotIn("url", stdout.lower())
 
     def test_generate_wait_requires_resource_key_before_creating_a_task(self):
-        with patch.object(cli.api, "request_json") as request:
-            code, _stdout, _stderr = run_cli(
+        with patch.object(cli.api, "request_json") as request, patch.object(
+            config.Path, "home", side_effect=RuntimeError("home is unavailable")
+        ):
+            code, _stdout, stderr = run_cli(
                 ["generate", "--model", "adobe-kling-3.0-720p", "--prompt", "sunrise", "--duration", "3", "--wait", "--output", "a.mp4"],
                 {"SUPERTOKEN_API_KEY": "sk_test"},
             )
         self.assertEqual(code, 2)
+        self.assertIn(config.RESOURCE_KEY_ENV, stderr)
         request.assert_not_called()
 
     def test_local_reference_uses_inventory_before_resource_upload_and_model_create(self):
