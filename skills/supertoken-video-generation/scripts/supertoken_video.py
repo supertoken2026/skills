@@ -31,7 +31,7 @@ _IDEMPOTENCY_KEY = re.compile(r"[!-~]{1,255}\Z")
 _HTTP_METHOD = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Z]+\Z")
 _KLING = re.compile(r"adobe-kling-3\.0(?:-omni)?-(?:720p|1080p)\Z")
 _VEO = re.compile(r"adobe-veo-3\.1-(standard|fast)-(?:720p|1080p)\Z")
-_ADOBE_SEEDANCE = re.compile(r"adobe-seedance-2\.0-(?:480p|720p)\Z")
+_ADOBE_SEEDANCE = re.compile(r"adobe-seedance-2\.0(?:-fast)?-(?:480p|720p)\Z")
 _LEONARDO_SEEDANCE_20 = re.compile(r"leonardo-seedance-2\.0(?:-fast)?-[A-Za-z0-9]+\Z")
 _LEONARDO_SEEDANCE_25 = re.compile(r"leonardo-seedance-2\.5-(?:480p|720p)\Z")
 _H3 = "leonardo-minimax-h3-1440p"
@@ -282,6 +282,10 @@ def build_task_payload(args, references) -> dict:
                 input_data[plural] = urls
             elif kind == "image" and reference_mode == "images" and model_kind != "h3":
                 input_data[plural] = urls
+            elif kind == "image" and reference_mode == "media" and model_kind in {
+                "adobe-seedance", "leonardo-seedance-20", "leonardo-seedance-25",
+            }:
+                input_data[plural] = urls
             else:
                 input_data[singular] = urls[0]
                 if len(urls) > 1:
@@ -498,6 +502,20 @@ def _result_videos(task):
     return videos
 
 
+def _task_failure_message(task):
+    error = task.get("error") if isinstance(task, dict) else None
+    if not isinstance(error, dict):
+        return "video task failed"
+    details = {
+        field: error[field]
+        for field in ("code", "message", "retryable", "upstream_error_code", "request_id")
+        if field in error
+    }
+    if not details:
+        return "video task failed"
+    return f"video task failed: {json.dumps(details, ensure_ascii=True, sort_keys=True)}"
+
+
 def wait_for_task(task_id, args) -> dict:
     task_id = _validate_task_id(task_id)
     wait_timeout = getattr(args, "wait_timeout", WAIT_TIMEOUT)
@@ -526,7 +544,7 @@ def wait_for_task(task_id, args) -> dict:
             )
             return {"task": task, "outputs": saved}
         if status == "failed":
-            raise api.ApiResponseError("video task failed")
+            raise api.ApiResponseError(_task_failure_message(task))
         if status not in {"queued", "in_progress"}:
             raise api.ApiResponseError("video task returned an unknown status")
         delay = _poll_delay(getattr(args, "_last_response_headers", {}), delay)

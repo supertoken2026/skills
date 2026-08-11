@@ -116,7 +116,7 @@ class DistributionWorkflowTests(unittest.TestCase):
             "MiniMax H3 的 `images`",
             "`adobe-kling-3.0(?:-omni)?-(720p|1080p)`",
             "`adobe-veo-3.1-(standard|fast)-(720p|1080p)`",
-            "`adobe-seedance-2.0-(480p|720p)`",
+            "`adobe-seedance-2.0(?:-fast)?-(480p|720p)`",
             "`leonardo-seedance-2.0(?:-fast)?-[A-Za-z0-9]+`",
             "`leonardo-seedance-2.5-(480p|720p)`",
             "`leonardo-minimax-h3-1440p`",

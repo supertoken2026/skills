@@ -41,6 +41,8 @@ python3 scripts/supertoken_video.py wait <task-id> \
 
 状态为 `succeeded` 时，CLI 立即下载并保存视频；状态为 `failed` 时停止并报告任务失败。默认总等待上限为 900 秒，包含任务查询、等待和结果下载；需要更长时间时，先创建任务，再用独立的 `wait --wait-timeout` 命令等待。
 
+终态失败时，CLI 会输出脱敏后的 `code`、`message`、`retryable`、`upstream_error_code` 和 `request_id`（服务端返回哪些字段就显示哪些），便于提交给渠道方；不会输出参考 URL、结果 URL 或 Key。
+
 ## 端点与 Key
 
 | 操作 | API | 使用的 Key |
@@ -121,7 +123,7 @@ python3 scripts/supertoken_video.py wait <task-id> \
 
 - Adobe Kling 3.0: `adobe-kling-3.0(?:-omni)?-(720p|1080p)`
 - Adobe Veo 3.1: `adobe-veo-3.1-(standard|fast)-(720p|1080p)`
-- Adobe Seedance 2.0: `adobe-seedance-2.0-(480p|720p)`
+- Adobe Seedance 2.0: `adobe-seedance-2.0(?:-fast)?-(480p|720p)`
 - Leonardo Seedance 2.0: `leonardo-seedance-2.0(?:-fast)?-[A-Za-z0-9]+`
 - Leonardo Seedance 2.5: `leonardo-seedance-2.5-(480p|720p)`
 - Leonardo MiniMax H3: `leonardo-minimax-h3-1440p`
@@ -139,9 +141,10 @@ python3 scripts/supertoken_video.py wait <task-id> \
 
 直接 API 的每个参考值形如 `{"url":"https://..."}`。不要按字段名猜测：
 
-- `frame` 和 `media` 的图片：第一张 `--image` 放入 `input.image`，其余图片依次放入 `input.reference_images[]`。
+- Seedance `frame` 的图片：第一张 `--image` 放入 `input.image`，其余图片依次放入 `input.reference_images[]`。
+- Adobe/Leonardo Seedance `media` 的图片：全部按顺序放入 `input.reference_images[]`，不要把第一张改放到 `input.image`；视频和音频仍分别放入对应的数组。
 - Kling Omni 与 Veo Standard 的 `images`：所有图片都放入 `input.reference_images[]`，不使用 `input.image`。
-- MiniMax H3 的 `images`：第一张放入 `input.image`，其余放入 `input.reference_images[]`。
+- MiniMax H3 的 `images`、`frame` 或 `media`：第一张放入 `input.image`，其余放入 `input.reference_images[]`。
 - 视频和音频不论模式，分别使用 `input.reference_videos[]` 和 `input.reference_audios[]`。
 
 ## 参考素材与 Adobe 示例
@@ -172,7 +175,7 @@ Adobe 的权限或渠道错误以 API 响应为准；记录脱敏后的错误摘
 
 ## 已验证与常见错误
 
-2026-08-11 已使用 Leonardo Seedance 2.5 的 4 秒文本生成完成一次完整 CLI 创建、等待和 MP4 下载验证。未把任务 ID、结果 URL 或任何 Key 写入文档。
+2026-08-11 已验证 Adobe Seedance 2.0 480p 的单图 `frame` 参考和 Leonardo Seedance 2.0 480p 的 `media` 图片参考，均完成 4 秒 MP4 下载；后者使用 `input.reference_images[]`。未把任务 ID、结果 URL 或任何 Key 写入文档。
 
 | 提示 | 处理 |
 | --- | --- |

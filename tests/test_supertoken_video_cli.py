@@ -272,6 +272,24 @@ class VideoCliTests(unittest.TestCase):
         )
         self.assertNotIn("audio", h3["input"])
 
+    def test_seedance_media_images_use_plural_reference_images_field(self):
+        for model in (
+            "adobe-seedance-2.0-480p",
+            "adobe-seedance-2.0-fast-480p",
+            "leonardo-seedance-2.0-480p",
+        ):
+            for image_count in (1, 2):
+                with self.subTest(model=model, image_count=image_count):
+                    payload = self.build_payload(model, 4, "media", image_count=image_count)
+                    self.assertEqual(
+                        payload["input"]["reference_images"],
+                        [
+                            {"url": f"https://assets.example/image-{index}.bin"}
+                            for index in range(image_count)
+                        ],
+                    )
+                    self.assertNotIn("image", payload["input"])
+
     def test_h3_frame_and_images_preserve_model_specific_image_order(self):
         frame = self.build_payload("leonardo-minimax-h3-1440p", 5, "frame", 2)
         self.assertEqual(frame["input"]["image"], {"url": "https://assets.example/image-0.bin"})
@@ -690,6 +708,29 @@ class VideoCliTests(unittest.TestCase):
         self.assertEqual(request.call_args.args[2], "ak_test")
         self.assertNotIn("token", stdout)
         self.assertEqual(json.loads(stdout), {"task_id": "task_1", "status": "succeeded"})
+
+    def test_wait_reports_sanitized_terminal_error_details(self):
+        task = response({
+            "id": "task_1",
+            "status": "failed",
+            "error": {
+                "code": "video_task_failed",
+                "message": "Missing data field with no errors in response from remote",
+                "retryable": False,
+                "upstream_error_code": "remote_empty_response",
+                "request_id": "request_123",
+            },
+        })
+        with patch.object(cli.api, "request_json", return_value=task):
+            code, stdout, stderr = run_cli(
+                ["wait", "task_1", "--output", "a.mp4"],
+                {"SUPERTOKEN_RESOURCE_API_KEY": "ak_test"},
+            )
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("video_task_failed", stderr)
+        self.assertIn("remote_empty_response", stderr)
+        self.assertIn("request_123", stderr)
 
 
 if __name__ == "__main__":

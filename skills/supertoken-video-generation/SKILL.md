@@ -50,3 +50,5 @@ python3 "$SKILL_DIR/scripts/supertoken_video.py" wait <task-id> \
 `SUPERTOKEN_API_KEY` 是模型 Token（`sk-...`），用于模型列表和创建任务；`SUPERTOKEN_RESOURCE_API_KEY` 是资源 Key（`ak_...`），用于本地素材上传、查询/等待任务和受保护结果下载。不要把任一 Key 放到命令行、日志或对话中。
 
 本地参考素材直接传给 `generate --image`、`--video` 或 `--audio`；同时指定 `--reference-mode frame|images|media`。CLI 会自动上传素材并创建任务；只有同时传入 `--wait --output` 才会轮询并下载，否则立即输出可交给 `wait` 的 `task_id`。模型时长、画幅、参考素材限制、直接 API 请求格式，以及 Adobe/Leonardo 示例见 [参考文档](references/video-api.md)。
+
+Seedance 的 `media` 模式把所有图片放入 `input.reference_images[]`；`input.image` 只用于 `frame` 首帧和 MiniMax H3 的模型规则。CLI 已按渠道处理该差异，直接调用 API 时不要把 Seedance `media` 的第一张图片改放到 `input.image`。
