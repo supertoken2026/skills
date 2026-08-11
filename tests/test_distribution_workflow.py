@@ -152,6 +152,23 @@ class DistributionWorkflowTests(unittest.TestCase):
             "npx --yes skills@1.5.19 add", "\n".join(chinese.splitlines()[:60])
         )
 
+    def test_root_readmes_include_video_upgrade_commands(self):
+        for path in (README, README_EN):
+            with self.subTest(path=path):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn(
+                    "npx --yes skills@1.5.19 update supertoken-video-generation",
+                    text,
+                )
+                self.assertIn(
+                    "npx --yes skills@1.5.19 update -g supertoken-video-generation",
+                    text,
+                )
+                self.assertIn(
+                    "npx --yes skills@1.5.19 update -p supertoken-video-generation",
+                    text,
+                )
+
     def test_wait_deadline_documentation_includes_result_downloads(self):
         self.assertIn("结果下载", README.read_text(encoding="utf-8"))
         self.assertIn("result downloads", README_EN.read_text(encoding="utf-8").lower())

@@ -148,6 +148,9 @@ The standalone video `wait` command defaults to 900 seconds; adjust it with `--w
 npx --yes skills@1.5.19 update supertoken-gpt-image-2
 npx --yes skills@1.5.19 update -g supertoken-gpt-image-2
 npx --yes skills@1.5.19 update -p supertoken-gpt-image-2
+npx --yes skills@1.5.19 update supertoken-video-generation
+npx --yes skills@1.5.19 update -g supertoken-video-generation
+npx --yes skills@1.5.19 update -p supertoken-video-generation
 ```
 
 An unversioned installation installed from the default branch can update normally. An installation using `#v0.1.0`, any tag, or a commit remains pinned to that ref until it is reinstalled without `#ref`.
