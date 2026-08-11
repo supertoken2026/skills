@@ -106,32 +106,32 @@ npx --yes skills@1.5.19 add supertoken2026/skills --skill supertoken-video-gener
 python3 scripts/setup.py --with-resource-key
 ```
 
-先查询当前账号完整的可用模型。`models --all` 输出 `GET /v1/models` 的原始实时账号清单，优先于任何静态示例；清单也可能含有非视频 ID（例如图片模型），只能从中选择 Adobe 或 Leonardo 视频模型。默认 `models` 仅是已知模型族的便利过滤，不能用于选择：
+先查询当前账号可用的模型 ID。只从 `models --all` 输出中选择 Adobe 或 Leonardo 视频模型；它优先于静态示例。默认 `models` 只是已知模型族的便利过滤，不能用于选择：
 
 ```bash
 python3 scripts/supertoken_video.py models --all
 ```
 
-最小生成、等待并保存示例（至少 4 秒；将模型 ID 替换为 `models --all` 的实际输出）：
+Leonardo Seedance 最小生成、等待并保存示例（仅当模型 ID 出现在实时清单中）：
 
 ```bash
 python3 scripts/supertoken_video.py generate \
-  --model <id-from-models-all> \
+  --model leonardo-seedance-2.5-480p \
   --prompt "清晨湖面上缓慢升起的薄雾" \
   --duration 4 \
   --wait --output ./sunrise.mp4
 ```
 
-视频使用 `SUPERTOKEN_API_KEY`（`sk-...` 模型 Token）查询模型和创建任务；`SUPERTOKEN_RESOURCE_API_KEY`（`ak_...` 资源 Key）用于本地素材上传、任务查询、等待，以及仅在 `url_auth: resource_api_key` 时下载临时结果 URL。详见 [视频 API 参考](skills/supertoken-video-generation/references/video-api.md)。
+视频使用 `SUPERTOKEN_API_KEY`（`sk-...` 模型 Token）查询模型和创建任务；`SUPERTOKEN_RESOURCE_API_KEY`（`ak_...` 资源 Key）用于本地素材上传、任务查询、等待，以及仅在 `url_auth: resource_api_key` 时下载临时结果 URL。把本地参考素材直接传给 `generate --image/--video/--audio`，CLI 会自动上传。完整参数、模型时长/画幅限制和 Adobe/Leonardo 示例见 [视频 API 参考](skills/supertoken-video-generation/references/video-api.md)。
 
 ## 注意事项
 
-- `SUPERTOKEN_API_KEY` 是 `sk-...` 模型 Token，用于生成、编辑、模型列表和异步创建。
-- `SUPERTOKEN_RESOURCE_API_KEY` 是 `ak_...` 资源 Key，只用于异步任务查询和等待。
+- 视频 `SUPERTOKEN_API_KEY` 是 `sk-...` 模型 Token，用于模型列表和创建任务。
+- 视频 `SUPERTOKEN_RESOURCE_API_KEY` 是 `ak_...` 资源 Key，用于本地素材上传、任务查询、等待和受保护结果下载。
 - `gpt-image-2-count` 是默认模型；当 `n > 1` 或需要完整 Images API 参数时，使用 `gpt-image-2`。
 - 创建请求使用 POST，且不会自动重试；不支持 Webhook 接收和异步 Base64 编辑。
 
-查询、等待任务或使用 `--async --wait` 前，在 Bash 或 zsh 中隐藏输入资源 Key：
+使用视频 `task` 或 `wait` 前，在 Bash 或 zsh 中隐藏输入资源 Key：
 
 ```bash
 printf "SuperToken Resource API Key: " >&2
@@ -140,7 +140,7 @@ printf "\n" >&2
 export SUPERTOKEN_RESOURCE_API_KEY
 ```
 
-任务查询、轮询休眠和结果下载共用一个截止时间。
+独立视频 `wait` 命令默认最多等待 900 秒；可用 `--wait-timeout` 调整。
 
 ## 升级
 

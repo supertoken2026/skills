@@ -57,35 +57,33 @@ class DistributionWorkflowTests(unittest.TestCase):
             self.assertIn("scripts/supertoken_video.py models --all", text)
             self.assertIn("--duration 4", text)
         for value in (
-            "GET /v1/models",
+            "SUPERTOKEN_API_KEY",
             "SUPERTOKEN_RESOURCE_API_KEY",
-            "mandatory before choosing an ID",
-            "url_auth",
-            "temporary",
-            "xAI",
-            "webhook receiver",
+            "--image",
+            "--video",
+            "--audio",
             "references/video-api.md",
         ):
             with self.subTest(value=value):
                 self.assertIn(value, skill)
-        self.assertIn("wins over the static list", reference)
+        for value in (
+            "GET /v1/models",
+            "POST /v1/video/tasks",
+            "--reference-mode",
+            "--wait-timeout",
+            "首次状态查询立即执行",
+            "初始轮询间隔为 2 秒",
+            "Retry-After",
+            "Adobe",
+            "Leonardo",
+            "url_auth",
+            "临时 HTTPS",
+        ):
+            with self.subTest(reference=value):
+                self.assertIn(value, reference)
         for text in (chinese, english, skill, reference):
             with self.subTest(authoritative_selection=text[:20]):
                 self.assertIn("models --all", text)
-        self.assertIn("known-family convenience filtering", skill)
-        self.assertIn("raw live account inventory", skill)
-        self.assertIn("non-video IDs", skill)
-        self.assertIn("非视频 ID", chinese)
-        for text in (english, reference):
-            with self.subTest(non_video_inventory=text[:20]):
-                self.assertIn("non-video IDs", text)
-        self.assertIn("Adobe", reference)
-        self.assertIn("Leonardo", reference)
-        self.assertIn("`input.image`（起始帧）", reference)
-        self.assertIn("`input.reference_images[]`", reference)
-        self.assertIn("`input.image` (the start frame)", reference)
-        self.assertIn("模型专用", reference)
-        self.assertIn("model-specific", reference)
         self.assertIn("getpass.getpass", setup)
         self.assertIn("--with-resource-key", setup)
         self.assertNotIn("--api-key", setup)
@@ -94,6 +92,54 @@ class DistributionWorkflowTests(unittest.TestCase):
             with self.subTest(ci_relative=relative):
                 self.assertIn(relative, workflow)
         self.assertIn('"supertoken-video-generation"', workflow)
+
+    def test_video_reference_covers_cli_handoff_and_parameter_contracts(self):
+        skill = (VIDEO_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        reference = (VIDEO_SKILL_DIR / "references" / "video-api.md").read_text(
+            encoding="utf-8"
+        )
+
+        for value in (
+            "`task_id`",
+            "`task <task-id>`",
+            "`upload --file <path> --kind image|video|audio`",
+        ):
+            with self.subTest(skill=value):
+                self.assertIn(value, skill)
+        for value in (
+            "`--wait` 与 `--output` 必须同时提供",
+            "恰好一个视频结果",
+            "512 MiB",
+            "`input.image`",
+            "`input.reference_images[]`",
+            "Kling Omni 与 Veo Standard",
+            "MiniMax H3 的 `images`",
+            "`adobe-kling-3.0(?:-omni)?-(720p|1080p)`",
+            "`adobe-veo-3.1-(standard|fast)-(720p|1080p)`",
+            "`adobe-seedance-2.0-(480p|720p)`",
+            "`leonardo-seedance-2.0(?:-fast)?-[A-Za-z0-9]+`",
+            "`leonardo-seedance-2.5-(480p|720p)`",
+            "`leonardo-minimax-h3-1440p`",
+            "`--base-url <https://...>`",
+            "`task <task_id>`",
+            "`upload --file <path> --kind image|video|audio`",
+            "JSON 对象",
+            "1-255 个可打印 ASCII 字符",
+            "无查询参数或片段",
+        ):
+            with self.subTest(reference=value):
+                self.assertIn(value, reference)
+
+    def test_video_docs_keep_wait_audio_and_result_auth_contracts(self):
+        skill = (VIDEO_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        reference = (VIDEO_SKILL_DIR / "references" / "video-api.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("只有同时传入 `--wait --output` 才会轮询并下载", skill)
+        self.assertIn("Leonardo Seedance 2.0 的音频不能单独使用", reference)
+        self.assertIn("`url_auth` 省略、为 `null` 或 `none`", reference)
+        self.assertIn("`resource_api_key`", reference)
 
     def test_root_readmes_link_to_each_other_and_keep_quick_start_near_top(self):
         chinese = README.read_text(encoding="utf-8")

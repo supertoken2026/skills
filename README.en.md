@@ -106,32 +106,32 @@ In the installed `supertoken-video-generation` directory reported by the `skills
 python3 scripts/setup.py --with-resource-key
 ```
 
-List the complete live model entitlement first. `models --all` returns the raw live account inventory of `GET /v1/models`, which wins over every static example. The inventory can include non-video IDs such as image models, so select only an Adobe or Leonardo video model from it. Default `models` is known-family convenience filtering and must not be used for selection:
+List the account's live model IDs first. Select an Adobe or Leonardo video model only from `models --all`; that list wins over static examples. Default `models` is known-family convenience filtering and must not be used for selection:
 
 ```bash
 python3 scripts/supertoken_video.py models --all
 ```
 
-Minimum create, wait, and save example (at least four seconds; replace the model ID with an actual `models --all` result):
+Minimum Leonardo Seedance create, wait, and save example (use it only when that model ID is in the live list):
 
 ```bash
 python3 scripts/supertoken_video.py generate \
-  --model <id-from-models-all> \
+  --model leonardo-seedance-2.5-480p \
   --prompt "Morning mist slowly rising from a quiet lake" \
   --duration 4 \
   --wait --output ./sunrise.mp4
 ```
 
-Video uses `SUPERTOKEN_API_KEY` (model Token, `sk-...`) for model discovery and task creation. `SUPERTOKEN_RESOURCE_API_KEY` (resource Key, `ak_...`) is for local media upload, task reads, waits, and a temporary result URL only when `url_auth` is `resource_api_key`. See the [video API reference](skills/supertoken-video-generation/references/video-api.md).
+Video uses `SUPERTOKEN_API_KEY` (model Token, `sk-...`) for model discovery and task creation. `SUPERTOKEN_RESOURCE_API_KEY` (resource Key, `ak_...`) is for local media upload, task reads, waits, and a temporary result URL only when `url_auth` is `resource_api_key`. Pass local references directly to `generate --image/--video/--audio`; the CLI uploads them. See the [video API reference](skills/supertoken-video-generation/references/video-api.md) for parameters, limits, and examples.
 
 ## Notes
 
-- `SUPERTOKEN_API_KEY` is the model Token (`sk-...`) for generation, edit, model listing, and async creation.
-- `SUPERTOKEN_RESOURCE_API_KEY` is the resource Key (`ak_...`) for async task queries and waits.
+- Video `SUPERTOKEN_API_KEY` is the model Token (`sk-...`) for model listing and task creation.
+- Video `SUPERTOKEN_RESOURCE_API_KEY` is the resource Key (`ak_...`) for local media uploads, task queries, waits, and protected result downloads.
 - `gpt-image-2-count` is the default; use `gpt-image-2` for `n > 1` or full Images API parameters.
 - Creation POST requests do not retry automatically. Webhook receiving and asynchronous Base64 editing are unsupported.
 
-Before querying or waiting for a task, or using `--async --wait`, enter the resource Key without echoing it in Bash or zsh:
+Before using video `task` or `wait`, enter the resource Key without echoing it in Bash or zsh:
 
 ```bash
 printf "SuperToken Resource API Key: " >&2
@@ -140,7 +140,7 @@ printf "\n" >&2
 export SUPERTOKEN_RESOURCE_API_KEY
 ```
 
-Task queries, polling sleeps, and result downloads share one deadline.
+The standalone video `wait` command defaults to 900 seconds; adjust it with `--wait-timeout`.
 
 ## Upgrade
 
