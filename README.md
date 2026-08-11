@@ -148,6 +148,9 @@ export SUPERTOKEN_RESOURCE_API_KEY
 npx --yes skills@1.5.19 update supertoken-gpt-image-2
 npx --yes skills@1.5.19 update -g supertoken-gpt-image-2
 npx --yes skills@1.5.19 update -p supertoken-gpt-image-2
+npx --yes skills@1.5.19 update supertoken-video-generation
+npx --yes skills@1.5.19 update -g supertoken-video-generation
+npx --yes skills@1.5.19 update -p supertoken-video-generation
 ```
 
 从默认分支安装且未指定 `#ref` 的版本可以正常更新。`#v0.1.0`、其他 tag 或 commit 安装会固定在该 ref；如需跟随默认分支，请重新执行未带 `#ref` 的安装命令。
