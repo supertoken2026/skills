@@ -23,9 +23,124 @@ REQUIRED_SKILL_FILES = (
     "scripts/supertoken_image.py",
     "references/gpt-image-2-api.md",
 )
+VIDEO_SKILL_DIR = ROOT / "skills" / "supertoken-video-generation"
+VIDEO_REQUIRED_SKILL_FILES = (
+    "SKILL.md",
+    "agents/openai.yaml",
+    "references/video-api.md",
+    "scripts/setup.py",
+    "scripts/supertoken_video.py",
+    "scripts/supertoken_video_api.py",
+    "scripts/supertoken_video_config.py",
+)
 
 
 class DistributionWorkflowTests(unittest.TestCase):
+    def test_video_skill_docs_setup_and_ci_distribution_contract(self):
+        self.assertTrue(
+            all((VIDEO_SKILL_DIR / relative).is_file() for relative in VIDEO_REQUIRED_SKILL_FILES)
+        )
+
+        chinese = README.read_text(encoding="utf-8")
+        english = README_EN.read_text(encoding="utf-8")
+        skill = (VIDEO_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        reference = (VIDEO_SKILL_DIR / "references" / "video-api.md").read_text(
+            encoding="utf-8"
+        )
+        setup = (VIDEO_SKILL_DIR / "scripts" / "setup.py").read_text(
+            encoding="utf-8"
+        )
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        for text in (chinese, english):
+            self.assertIn("supertoken-video-generation", text)
+            self.assertIn("scripts/supertoken_video.py models --all", text)
+            self.assertIn("--duration 4", text)
+        for value in (
+            "SUPERTOKEN_API_KEY",
+            "SUPERTOKEN_RESOURCE_API_KEY",
+            "--image",
+            "--video",
+            "--audio",
+            "references/video-api.md",
+        ):
+            with self.subTest(value=value):
+                self.assertIn(value, skill)
+        for value in (
+            "GET /v1/models",
+            "POST /v1/video/tasks",
+            "--reference-mode",
+            "--wait-timeout",
+            "首次状态查询立即执行",
+            "初始轮询间隔为 2 秒",
+            "Retry-After",
+            "Adobe",
+            "Leonardo",
+            "url_auth",
+            "临时 HTTPS",
+        ):
+            with self.subTest(reference=value):
+                self.assertIn(value, reference)
+        for text in (chinese, english, skill, reference):
+            with self.subTest(authoritative_selection=text[:20]):
+                self.assertIn("models --all", text)
+        self.assertIn("getpass.getpass", setup)
+        self.assertIn("--with-resource-key", setup)
+        self.assertNotIn("--api-key", setup)
+        self.assertNotIn("--resource-api-key", setup)
+        for relative in VIDEO_REQUIRED_SKILL_FILES:
+            with self.subTest(ci_relative=relative):
+                self.assertIn(relative, workflow)
+        self.assertIn('"supertoken-video-generation"', workflow)
+
+    def test_video_reference_covers_cli_handoff_and_parameter_contracts(self):
+        skill = (VIDEO_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        reference = (VIDEO_SKILL_DIR / "references" / "video-api.md").read_text(
+            encoding="utf-8"
+        )
+
+        for value in (
+            "`task_id`",
+            "`task <task-id>`",
+            "`upload --file <path> --kind image|video|audio`",
+        ):
+            with self.subTest(skill=value):
+                self.assertIn(value, skill)
+        for value in (
+            "`--wait` 与 `--output` 必须同时提供",
+            "恰好一个视频结果",
+            "512 MiB",
+            "`input.image`",
+            "`input.reference_images[]`",
+            "Kling Omni 与 Veo Standard",
+            "MiniMax H3 的 `images`",
+            "`adobe-kling-3.0(?:-omni)?-(720p|1080p)`",
+            "`adobe-veo-3.1-(standard|fast)-(720p|1080p)`",
+            "`adobe-seedance-2.0(?:-fast)?-(480p|720p)`",
+            "`leonardo-seedance-2.0(?:-fast)?-[A-Za-z0-9]+`",
+            "`leonardo-seedance-2.5-(480p|720p)`",
+            "`leonardo-minimax-h3-1440p`",
+            "`--base-url <https://...>`",
+            "`task <task_id>`",
+            "`upload --file <path> --kind image|video|audio`",
+            "JSON 对象",
+            "1-255 个可打印 ASCII 字符",
+            "无查询参数或片段",
+        ):
+            with self.subTest(reference=value):
+                self.assertIn(value, reference)
+
+    def test_video_docs_keep_wait_audio_and_result_auth_contracts(self):
+        skill = (VIDEO_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        reference = (VIDEO_SKILL_DIR / "references" / "video-api.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("只有同时传入 `--wait --output` 才会轮询并下载", skill)
+        self.assertIn("Leonardo Seedance 2.0 的音频不能单独使用", reference)
+        self.assertIn("`url_auth` 省略、为 `null` 或 `none`", reference)
+        self.assertIn("`resource_api_key`", reference)
+
     def test_root_readmes_link_to_each_other_and_keep_quick_start_near_top(self):
         chinese = README.read_text(encoding="utf-8")
         english = README_EN.read_text(encoding="utf-8")
@@ -36,6 +151,23 @@ class DistributionWorkflowTests(unittest.TestCase):
         self.assertIn(
             "npx --yes skills@1.5.19 add", "\n".join(chinese.splitlines()[:60])
         )
+
+    def test_root_readmes_include_video_upgrade_commands(self):
+        for path in (README, README_EN):
+            with self.subTest(path=path):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn(
+                    "npx --yes skills@1.5.19 update supertoken-video-generation",
+                    text,
+                )
+                self.assertIn(
+                    "npx --yes skills@1.5.19 update -g supertoken-video-generation",
+                    text,
+                )
+                self.assertIn(
+                    "npx --yes skills@1.5.19 update -p supertoken-video-generation",
+                    text,
+                )
 
     def test_wait_deadline_documentation_includes_result_downloads(self):
         self.assertIn("结果下载", README.read_text(encoding="utf-8"))

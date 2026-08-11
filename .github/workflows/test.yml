@@ -85,6 +85,60 @@ jobs:
               assert (installed / relative).read_bytes() == (source / relative).read_bytes(), relative
           print("platform shared install smoke passed")
           PY
+      - name: Smoke local video shared install
+        shell: bash
+        env:
+          SOURCE_VIDEO_SKILL_DIR: ${{ github.workspace }}/skills/supertoken-video-generation
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import shutil
+          import subprocess
+          from pathlib import Path
+
+          required = (
+              'SKILL.md',
+              'agents/openai.yaml',
+              'references/video-api.md',
+              'scripts/setup.py',
+              'scripts/supertoken_video.py',
+              'scripts/supertoken_video_api.py',
+              'scripts/supertoken_video_config.py',
+          )
+          source = Path(os.environ["SOURCE_VIDEO_SKILL_DIR"]).resolve()
+          project = Path(os.environ["RUNNER_TEMP"]) / "platform-video-shared-project"
+          project.mkdir(parents=True, exist_ok=True)
+          npx = shutil.which("npx")
+          assert npx, "npx was not found"
+
+          def run(*args, capture=False):
+              return subprocess.run(
+                  [npx, "--yes", "skills@1.5.19", *args],
+                  cwd=project,
+                  check=True,
+                  text=True,
+                  capture_output=capture,
+              )
+
+          run(
+              "add", os.environ["GITHUB_WORKSPACE"],
+              "--skill", "supertoken-video-generation",
+              "--agent", "codex", "claude-code",
+              "--yes",
+          )
+          listed = json.loads(run("list", "--json", capture=True).stdout)
+          matches = [item for item in listed if item["name"] == "supertoken-video-generation"]
+          assert len(matches) == 1, listed
+          installed = Path(matches[0]["path"]).resolve()
+          claude = project / ".claude" / "skills" / "supertoken-video-generation"
+          assert claude.resolve() == installed, (claude, installed)
+          for relative in required:
+              assert (installed / relative).read_bytes() == (source / relative).read_bytes(), relative
+          subprocess.run(["python", installed / "scripts" / "supertoken_video.py", "--help"], check=True)
+          subprocess.run(["python", installed / "scripts" / "supertoken_video.py", "generate", "--help"], check=True)
+          print("platform video shared install smoke passed")
+          PY
       - name: Reject legacy brand strings
         shell: bash
         run: |

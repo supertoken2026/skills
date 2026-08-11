@@ -1,0 +1,6 @@
+interface:
+  display_name: "SuperToken Video Generation"
+  short_description: "Generate and save Adobe and Leonardo videos"
+  default_prompt: "Use $supertoken-video-generation to list available models and generate a video."
+policy:
+  allow_implicit_invocation: true
