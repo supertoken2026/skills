@@ -98,8 +98,9 @@ class VideoCliTests(unittest.TestCase):
         self.assertEqual(code, 0, stderr)
         self.assertNotIn("sk_server_secret", stdout)
 
+        listed = response({"data": [{"id": "adobe-kling-3.0-720p"}]})
         created = response({"id": "sk_server_secret", "status": "queued"}, status=202)
-        with patch.object(cli.api, "request_json", return_value=created):
+        with patch.object(cli.api, "request_json", side_effect=[listed, created]):
             code, stdout, stderr = run_cli(
                 ["generate", "--model", "adobe-kling-3.0-720p", "--prompt", "sunrise", "--duration", "3", "--idempotency-key", "sk_client_secret"],
                 {"SUPERTOKEN_API_KEY": "sk_test"},
@@ -420,18 +421,26 @@ class VideoCliTests(unittest.TestCase):
                     self.assertEqual(code, 2)
         request.assert_not_called()
 
-    def test_create_uses_model_key_and_sanitized_summary(self):
+    def test_generate_checks_live_inventory_before_creating_with_model_key(self):
+        listed = response({"data": [{"id": "adobe-kling-3.0-720p"}]})
         task = response({"id": "task_42", "status": "queued"}, status=202)
-        with patch.object(cli.api, "request_json", return_value=task) as request:
+        with patch.object(cli.api, "request_json", side_effect=[listed, task]) as request:
             code, stdout, stderr = run_cli(
                 ["generate", "--model", "adobe-kling-3.0-720p", "--prompt", "sunrise", "--duration", "3"],
                 {"SUPERTOKEN_API_KEY": "sk_test"},
             )
         self.assertEqual(code, 0, stderr)
-        self.assertEqual(request.call_args.args[0], "POST")
-        self.assertEqual(request.call_args.args[2], "sk_test")
-        self.assertEqual(request.call_args.args[4]["model"], "adobe-kling-3.0-720p")
-        header = request.call_args.args[5]["Idempotency-Key"]
+        self.assertEqual(
+            [(call.args[0], call.args[1], call.args[2]) for call in request.call_args_list],
+            [
+                ("GET", "https://api.supertoken.cc/v1/models", "sk_test"),
+                ("POST", "https://api.supertoken.cc/v1/video/tasks", "sk_test"),
+            ],
+        )
+        self.assertEqual(request.call_count, 2)
+        create = request.call_args_list[1]
+        self.assertEqual(create.args[4]["model"], "adobe-kling-3.0-720p")
+        header = create.args[5]["Idempotency-Key"]
         self.assertTrue(header.isascii())
         self.assertTrue(header)
         summary = json.loads(stdout)
@@ -448,30 +457,33 @@ class VideoCliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         request.assert_not_called()
 
-    def test_local_reference_uses_resource_upload_before_model_create(self):
+    def test_local_reference_uses_inventory_before_resource_upload_and_model_create(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             reference = Path(temp_dir) / "reference.png"
             reference.write_bytes(b"image")
+            listed = response({"data": [{"id": "leonardo-seedance-2.5-480p"}]})
             prepared = response({"data": [{
                 "id": "media_1", "method": "PATCH+SIGNED", "upload_url": "https://uploads.example/one",
                 "headers": {"Content-Type": "image/png", "X-Upload-Token": "signed"},
             }]})
             completed = response({"data": [{"id": "media_1", "url": "https://assets.example/reference.png"}]})
             created = response({"id": "task_1", "status": "queued"}, status=202)
-            with patch.object(cli.api, "request_json", side_effect=[prepared, completed, created]) as request, patch.object(cli.api, "upload_media_files", return_value=[]) as uploaded:
+            with patch.object(cli.api, "request_json", side_effect=[listed, prepared, completed, created]) as request, patch.object(cli.api, "upload_media_files", return_value=[]) as uploaded:
                 code, _stdout, stderr = run_cli(
                     ["generate", "--model", "leonardo-seedance-2.5-480p", "--prompt", "lake", "--duration", "4", "--reference-mode", "frame", "--image", str(reference)],
                     {"SUPERTOKEN_API_KEY": "sk_test", "SUPERTOKEN_RESOURCE_API_KEY": "ak_test"},
                 )
         self.assertEqual(code, 0, stderr)
-        self.assertEqual(request.call_args_list[0].args[2], "ak_test")
+        self.assertEqual(request.call_args_list[0].args[0], "GET")
+        self.assertEqual(request.call_args_list[0].args[2], "sk_test")
         self.assertEqual(request.call_args_list[1].args[2], "ak_test")
-        self.assertEqual(request.call_args_list[2].args[2], "sk_test")
+        self.assertEqual(request.call_args_list[2].args[2], "ak_test")
+        self.assertEqual(request.call_args_list[3].args[2], "sk_test")
         self.assertEqual(
-            request.call_args_list[0].args[4],
+            request.call_args_list[1].args[4],
             {"files": [{"kind": "image", "filename": "reference.png", "mime_type": "image/png", "size_bytes": 5}]},
         )
-        self.assertEqual(request.call_args_list[1].args[4], {"upload_ids": ["media_1"]})
+        self.assertEqual(request.call_args_list[2].args[4], {"upload_ids": ["media_1"]})
         uploaded.assert_called_once_with(
             "https://uploads.example/one", [reference], cli.HTTP_TIMEOUT,
             headers={"Content-Type": "image/png", "X-Upload-Token": "signed"}, method="PATCH+SIGNED",
@@ -482,6 +494,7 @@ class VideoCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             reference = Path(temp_dir) / "reference.png"
             reference.write_bytes(b"image")
+            listed = response({"data": [{"id": "leonardo-seedance-2.5-480p"}]})
             prepared = response({"data": [{
                 "id": "media_1", "method": "PUT", "upload_url": "https://uploads.example/one",
                 "headers": {},
@@ -491,17 +504,20 @@ class VideoCliTests(unittest.TestCase):
                 "url": f"https://assets.example/reference.png?signature={query_value}",
             }]})
             created = response({"id": "task_1", "status": "queued"}, status=202)
-            with patch.object(cli.api, "request_json", side_effect=[prepared, completed, created]) as request, patch.object(cli.api, "upload_media_files", return_value=[]):
+            with patch.object(cli.api, "request_json", side_effect=[listed, prepared, completed, created]) as request, patch.object(cli.api, "upload_media_files", return_value=[]):
                 code, stdout, stderr = run_cli(
                     ["generate", "--model", "leonardo-seedance-2.5-480p", "--prompt", "lake", "--duration", "4", "--reference-mode", "frame", "--image", str(reference)],
                     {"SUPERTOKEN_API_KEY": "sk_test", "SUPERTOKEN_RESOURCE_API_KEY": "ak_test"},
                 )
         self.assertEqual(code, 2)
-        self.assertEqual(request.call_count, 2)
+        self.assertEqual(request.call_count, 3)
         self.assertIn("media completion response was invalid", stderr)
         self.assertNotIn(query_value, stdout)
         self.assertNotIn(query_value, stderr)
-        self.assertNotIn(query_value, json.dumps([call.args[4] for call in request.call_args_list]))
+        self.assertNotIn(
+            query_value,
+            json.dumps([call.args[4] for call in request.call_args_list if call.args[0] == "POST"]),
+        )
 
     def test_upload_requires_resource_key_and_reports_no_temporary_url(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -580,17 +596,66 @@ class VideoCliTests(unittest.TestCase):
                     self.assertEqual(code, 2)
         request.assert_not_called()
 
-    def test_parser_errors_do_not_echo_literal_or_escaped_key_shaped_arguments(self):
-        values = ("sk_parser_sentinel", "sk\\u005fparser\\u005fsentinel")
-        with patch.object(cli.api, "request_json") as request:
-            for value in values:
-                with self.subTest(value=value):
-                    code, stdout, stderr = run_cli(["wait", "task_1", "--output", "a.mp4", "--api-key", value])
-                    self.assertEqual(code, 2)
-                    self.assertEqual(stdout, "")
-                    self.assertNotIn(value, stderr)
-                    self.assertNotIn("sk_parser", stderr)
-        request.assert_not_called()
+    def test_operational_commands_reject_credential_options_before_requests_or_echoes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "source.png"
+            source.write_bytes(b"image")
+            commands = (
+                ("models", ["models"], {"SUPERTOKEN_API_KEY": "sk_environment"}),
+                ("upload", ["upload", "--file", str(source), "--kind", "image"], {"SUPERTOKEN_RESOURCE_API_KEY": "ak_environment"}),
+                ("generate", ["generate", "--model", "adobe-kling-3.0-720p", "--prompt", "sunrise", "--duration", "3"], {"SUPERTOKEN_API_KEY": "sk_environment"}),
+                ("task", ["task", "task_1"], {"SUPERTOKEN_RESOURCE_API_KEY": "ak_environment"}),
+                ("wait", ["wait", "task_1", "--output", "a.mp4"], {"SUPERTOKEN_RESOURCE_API_KEY": "ak_environment"}),
+            )
+            options = (
+                ("--api-key", ("sk_cli_argument_sentinel", "sk\\u005fcli\\u005fargument\\u005fsentinel")),
+                ("--resource-api-key", ("ak_cli_argument_sentinel", "ak\\u005fcli\\u005fargument\\u005fsentinel")),
+            )
+            with patch.object(cli.api, "request_json") as request:
+                for command, argv, environment in commands:
+                    for option, values in options:
+                        for value in values:
+                            with self.subTest(command=command, option=option, value=value):
+                                code, stdout, stderr = run_cli([*argv, option, value], environment)
+                                self.assertEqual(code, 2)
+                                self.assertEqual(stdout, "")
+                                self.assertNotIn(value, stderr)
+                                self.assertNotIn(value.replace("\\u005f", "_"), stderr)
+                                self.assertNotIn("cli_argument_sentinel", stderr)
+            request.assert_not_called()
+
+    def test_generate_rejects_absent_live_model_before_local_upload_or_create(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            reference = Path(temp_dir) / "reference.png"
+            reference.write_bytes(b"image")
+            listed = response({"data": [{"id": "adobe-veo-3.1-fast-720p"}]})
+            with patch.object(cli.api, "request_json", return_value=listed) as request, patch.object(cli.api, "upload_media_files") as uploaded:
+                code, stdout, stderr = run_cli(
+                    ["generate", "--model", "leonardo-seedance-2.5-480p", "--prompt", "lake", "--duration", "4", "--reference-mode", "frame", "--image", str(reference)],
+                    {"SUPERTOKEN_API_KEY": "sk_test", "SUPERTOKEN_RESOURCE_API_KEY": "ak_test"},
+                )
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(request.call_args.args[:3], ("GET", "https://api.supertoken.cc/v1/models", "sk_test"))
+        self.assertNotIn("/v1/video/tasks", str(request.call_args_list))
+        self.assertNotIn("/v1/media/uploads", str(request.call_args_list))
+        self.assertIn("model", stderr)
+        uploaded.assert_not_called()
+
+    def test_generate_accepts_live_unknown_model_without_static_contract_preflight(self):
+        model = "adobe-nextgen-video-2026"
+        listed = response({"data": [{"id": model}]})
+        created = response({"id": "task_1", "status": "queued"}, status=202)
+        with patch.object(cli.api, "request_json", side_effect=[listed, created]) as request:
+            code, stdout, stderr = run_cli(
+                ["generate", "--model", model, "--prompt", "sunrise", "--duration", "1"],
+                {"SUPERTOKEN_API_KEY": "sk_test"},
+            )
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual([call.args[0] for call in request.call_args_list], ["GET", "POST"])
+        self.assertEqual(request.call_args_list[1].args[4]["model"], model)
+        self.assertEqual(json.loads(stdout)["task_id"], "task_1")
 
     def test_task_rejects_non_finite_progress_before_json_output(self):
         with patch.object(cli.api, "request_json") as request:
