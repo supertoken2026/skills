@@ -4,6 +4,16 @@ SuperToken Agent Skills provides GPT Image 2 image generation and editing, plus 
 
 [中文](README.md)
 
+## Table of Contents
+
+- [Quick start](#quick-start)
+- [Common commands](#common-commands)
+- [Video generation](#video-generation)
+- [Notes](#notes)
+- [Upgrade](#upgrade)
+- [Reference](#reference)
+- [Support](#support)
+
 ## Quick start
 
 1. Install for Codex:
