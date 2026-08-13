@@ -171,6 +171,8 @@ npx --yes skills@1.5.19 update -p supertoken-video-generation
 
 [视频 API 参考](skills/supertoken-video-generation/references/video-api.md) 说明统一视频任务、模型限制、上传、轮询和临时结果下载。
 
+[Adobe GPT Image 2 Count 渠道测试](docs/testing/adobe-gpt-image-2-count-test.md) 提供公开测试 key、完整请求示例和较长超时配置。
+
 ## 支持
 
 - 文档：<https://docs.supertoken.cc/>

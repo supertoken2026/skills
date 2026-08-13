@@ -171,6 +171,8 @@ See the [GPT Image 2 API reference](skills/supertoken-gpt-image-2/references/gpt
 
 See the [video API reference](skills/supertoken-video-generation/references/video-api.md) for unified video tasks, model constraints, upload, polling, and temporary result downloads.
 
+See the [Adobe GPT Image 2 Count channel test](docs/testing/adobe-gpt-image-2-count-test.md) for the test key, request examples, and the longer timeout required by this channel.
+
 ## Support
 
 - Documentation: <https://docs.supertoken.cc/>
