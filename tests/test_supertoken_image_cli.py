@@ -151,6 +151,8 @@ class ModelListingTests(unittest.TestCase):
             "data": [
                 {"id": "gpt-image-2"},
                 {"id": "gpt-image-2-count"},
+                {"id": "gpt-image-2.5-flare"},
+                {"id": "gpt-image-2.5-sunburst"},
                 {"id": "gpt-4.1"},
             ],
         })
@@ -160,7 +162,9 @@ class ModelListingTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
-        self.assertEqual(json.loads(stdout), {"models": ["gpt-image-2", "gpt-image-2-count"]})
+        self.assertEqual(json.loads(stdout), {"models": [
+            "gpt-image-2", "gpt-image-2-count", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+        ]})
         request_json.assert_called_once_with(
             "GET", "https://api.supertoken.cc/v1/models", "test-key", 300,
         )
@@ -172,7 +176,7 @@ class ModelListingTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertEqual(
             json.loads(stdout),
-            {"models": ["gpt-image-2", "gpt-image-2-count", "gpt-4.1"]},
+            {"models": ["gpt-image-2", "gpt-image-2-count", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-4.1"]},
         )
 
     def test_models_rejects_malformed_success_schemas_without_traceback(self):
@@ -310,6 +314,25 @@ class ExplicitCliKeyTests(unittest.TestCase):
 
 
 class SyncGenerationTests(unittest.TestCase):
+    def test_three_primary_models_reach_generation_request_and_save_result(self):
+        models = (None, "gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst")
+        for requested in models:
+            with self.subTest(model=requested), tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "result.png"
+                argv = ["generate", "--prompt", "cat", "--output", str(output)]
+                if requested:
+                    argv.extend(["--model", requested])
+                response = api_response({"data": [{
+                    "b64_json": base64.b64encode(PNG_BYTES).decode(),
+                }]})
+                with patch.object(cli.api, "request_json", return_value=response) as request:
+                    code, stdout, stderr = run_cli(argv, {config.API_KEY_ENV: "test-key"})
+                self.assertEqual(code, 0, stderr)
+                expected = requested or "gpt-image-2.5-flare"
+                self.assertEqual(request.call_args.args[4]["model"], expected)
+                self.assertEqual(json.loads(stdout)["model"], expected)
+                self.assertEqual(output.read_bytes(), PNG_BYTES)
+
     def test_generation_saves_every_image_and_reports_all_outputs(self):
         items = [
             {"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")},
@@ -473,7 +496,7 @@ class SyncGenerationTests(unittest.TestCase):
             self.assertEqual(
                 cli.build_generation_payload(args),
                 {
-                    "model": "gpt-image-2-count",
+                    "model": "gpt-image-2.5-flare",
                     "prompt": "cat",
                     "n": 1,
                     "size": "1024x1024",
@@ -845,6 +868,7 @@ class SyncEditTests(unittest.TestCase):
                         with patch.object(cli.api, "request_multipart") as multipart_request:
                             code, _stdout, stderr = run_cli([
                                 "edit", "--prompt", "combine", *input_args,
+                                "--model", "gpt-image-2-count",
                                 "--n", "2", "--output", str(Path(temp_dir) / "result.png"),
                             ], {config.API_KEY_ENV: "test-key"})
                     self.assertEqual(code, 2)
@@ -1004,7 +1028,7 @@ class AsyncTaskTests(unittest.TestCase):
         self.assertEqual(json.loads(stdout), {
             "mode": "async",
             "operation": "generation",
-            "model": "gpt-image-2-count",
+            "model": "gpt-image-2.5-flare",
             "task_id": "task_create",
             "status": "queued",
             "progress": 0,
@@ -1047,7 +1071,7 @@ class AsyncTaskTests(unittest.TestCase):
         self.assertEqual(json.loads(stdout), {
             "mode": "async",
             "operation": "generation",
-            "model": "gpt-image-2-count",
+            "model": "gpt-image-2.5-flare",
             "task_id": "task_documented_create",
             "status": "queued",
             "progress": 0,

@@ -1,12 +1,13 @@
 # SuperToken Skills
 
-SuperToken 官方 Agent Skills。当前提供 GPT Image 2 图片生成与编辑，以及 Adobe 和 Leonardo 视频生成能力，可在 Codex 和 Claude Code 中使用。
+SuperToken 官方 Agent Skills。提供 GPT Image 2 / 2.5 图片生成与编辑，以及 Adobe 和 Leonardo 视频生成能力，可在 Codex 和 Claude Code 中使用。
 
 [English](README.en.md)
 
 ## 目录
 
 - [快速开始](#快速开始)
+- [生图模型选择](#生图模型选择)
 - [常用命令](#常用命令)
 - [视频生成](#视频生成)
 - [注意事项](#注意事项)
@@ -49,6 +50,25 @@ SuperToken 官方 Agent Skills。当前提供 GPT Image 2 图片生成与编辑�
      --prompt "一只坐在阳光里的小猫" \
      --output ./supertoken-kitten.png
    ```
+
+## 生图模型选择
+
+| 模型 | 适合场景 |
+| --- | --- |
+| `gpt-image-2.5-flare`（默认） | 日常配图、草稿和快速迭代，优先响应速度 |
+| `gpt-image-2.5-sunburst` | 产品主图、复杂材质和精细编辑，优先成品质量，可接受更长等待 |
+| `gpt-image-2` | 保留 2.0，适合已有流程或明确指定旧版的任务 |
+
+切换模型只需添加 `--model`。例如生成 Sunburst 成品图：
+
+```bash
+python3 scripts/supertoken_image.py generate \
+  --model gpt-image-2.5-sunburst --quality high \
+  --prompt "蓝色陶瓷茶壶的产品摄影，保留釉面和亚麻桌布的细节" \
+  --output ./product.png
+```
+
+首次调用先运行下方 `models` 确认可用权限。[模型选择说明](skills/supertoken-gpt-image-2/references/model-selection.md) 收录资料来源与渠道限制；实际耗时受画面复杂度、质量参数及排队影响。
 
 ## 常用命令
 
@@ -138,7 +158,7 @@ python3 scripts/supertoken_video.py generate \
 
 - 视频 `SUPERTOKEN_API_KEY` 是 `sk-...` 模型 Token，用于模型列表和创建任务。
 - 视频 `SUPERTOKEN_RESOURCE_API_KEY` 是 `ak_...` 资源 Key，用于本地素材上传、任务查询、等待和受保护结果下载。
-- `gpt-image-2-count` 是默认模型；当 `n > 1` 或需要完整 Images API 参数时，使用 `gpt-image-2`。
+- 生图默认使用 `gpt-image-2.5-flare`；旧 `gpt-image-2-count` 及 Adobe 别名仅在当前模型列表可用且明确指定时使用。
 - 创建请求使用 POST，且不会自动重试；不支持 Webhook 接收和异步 Base64 编辑。
 
 使用视频 `task` 或 `wait` 前，在 Bash 或 zsh 中隐藏输入资源 Key：

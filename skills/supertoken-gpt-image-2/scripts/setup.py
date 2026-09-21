@@ -5,6 +5,7 @@ import sys
 
 from supertoken_config import (
     DEFAULT_BASE_URL,
+    DEFAULT_MODEL,
     ConfigError,
     MODEL_KEY,
     RESOURCE_KEY,
@@ -63,7 +64,7 @@ def main(argv=None):
     print(f"模型 API Key 已保存到：{backend}")
     if resource_backend:
         print(f"资源 API Key 已保存到：{resource_backend}")
-    print("默认模型：gpt-image-2-count")
+    print(f"默认模型：{DEFAULT_MODEL}")
     return 0
 
 

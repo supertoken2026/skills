@@ -53,6 +53,7 @@ jobs:
               'scripts/supertoken_config.py',
               'scripts/supertoken_image.py',
               'references/gpt-image-2-api.md',
+              'references/model-selection.md',
           )
           source = Path(os.environ["SOURCE_SKILL_DIR"]).resolve()
           project = Path(os.environ["RUNNER_TEMP"]) / "platform-shared-project"
@@ -188,6 +189,7 @@ jobs:
             SKILL.md
             agents/openai.yaml
             references/gpt-image-2-api.md
+            references/model-selection.md
             scripts/generate_image.py
             scripts/setup.py
             scripts/supertoken_api.py

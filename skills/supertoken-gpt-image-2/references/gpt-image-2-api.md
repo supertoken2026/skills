@@ -1,4 +1,4 @@
-# GPT Image 2 API 参考
+# GPT Image 2 / 2.5 API 参考
 
 本文记录 `scripts/supertoken_image.py` 使用的端点、字段和客户端限制。命令选择与常用示例见上一级 [SKILL.md](../SKILL.md)。
 
@@ -52,7 +52,7 @@
 | 创建异步任务 | `POST /v1/image/tasks` | JSON 或 multipart | `SUPERTOKEN_API_KEY` |
 | 查询异步任务 | `GET /v1/image/tasks/{task_id}` | 无请求体 | `SUPERTOKEN_RESOURCE_API_KEY` |
 
-`models` 默认只输出 ID 中包含 `gpt-image-2` 的模型；传 `--all` 才输出全部模型。默认模型是 `gpt-image-2-count`。当 `n > 1` 或需要通过同步接口传递完整官方参数时，选择 `gpt-image-2`。只有用户明确指定，或模型列表确认可用时，才选择 `adobe-gpt-image-2-count`。
+`models` 默认只输出 ID 中包含 `gpt-image-2` 的模型，包含 2.0 和两个 2.5 型号；传 `--all` 才输出全部模型。默认模型是 `gpt-image-2.5-flare`；画质与精细编辑优先时选 `gpt-image-2.5-sunburst`；需要 2.0 时显式选 `gpt-image-2`。旧 `-count` 或 Adobe 别名仅在用户指定且模型列表确认可用时使用。[模型选择说明](model-selection.md) 包含场景、资料来源与渠道边界。
 
 ## 同步字段
 
@@ -60,7 +60,7 @@
 
 | CLI 参数 | JSON 字段 | 说明 |
 | --- | --- | --- |
-| `--model` | `model` | 默认 `gpt-image-2-count` |
+| `--model` | `model` | 默认 `gpt-image-2.5-flare`，可显式选择 Sunburst 或 2.0 |
 | `--prompt` | `prompt` | 必填 |
 | `--n` | `n` | `1..10`；`gpt-image-2-count` 只允许 `1` |
 | `--size` | `size` | 默认 `1024x1024` |
@@ -78,7 +78,7 @@ URL 输入使用顶层字符串数组：
 
 ```json
 {
-  "model": "gpt-image-2-count",
+  "model": "gpt-image-2.5-flare",
   "prompt": "改成黑白铅笔素描",
   "n": 1,
   "size": "1024x1024",
@@ -91,7 +91,7 @@ Base64 输入使用对象数组：
 
 ```json
 {
-  "model": "gpt-image-2-count",
+  "model": "gpt-image-2.5-flare",
   "prompt": "改成黑白铅笔素描",
   "n": 1,
   "size": "1024x1024",
@@ -118,7 +118,7 @@ Base64 输入使用对象数组：
 
 ```json
 {
-  "model": "gpt-image-2-count",
+  "model": "gpt-image-2.5-flare",
   "operation": "generation",
   "input": {"prompt": "夜间城市天际线"},
   "output": {
@@ -135,7 +135,7 @@ Base64 输入使用对象数组：
 
 ```json
 {
-  "model": "gpt-image-2-count",
+  "model": "gpt-image-2.5-flare",
   "operation": "edit",
   "input": {
     "prompt": "改成黑白铅笔素描",
@@ -257,7 +257,7 @@ The two keys are read and stored separately. The CLI trims surrounding key white
 | Create async task | `POST /v1/image/tasks` | JSON or multipart | `SUPERTOKEN_API_KEY` |
 | Query async task | `GET /v1/image/tasks/{task_id}` | No body | `SUPERTOKEN_RESOURCE_API_KEY` |
 
-`models` returns only IDs containing `gpt-image-2` unless `--all` is supplied. The default is `gpt-image-2-count`. Use `gpt-image-2` when `n > 1` or a sync request needs the full official parameters. Select `adobe-gpt-image-2-count` only when the user asks for it or the model list confirms access.
+`models` returns IDs containing `gpt-image-2`, including 2.0 and both 2.5 variants; use `--all` for the complete list. The default is `gpt-image-2.5-flare`. Choose `gpt-image-2.5-sunburst` for quality and precise editing, or explicitly select `gpt-image-2` for 2.0. Legacy `-count` and Adobe aliases require a user choice and confirmed access. See [model selection](model-selection.md) for use cases, sources, and channel limits.
 
 ### Synchronous fields
 
@@ -265,7 +265,7 @@ The two keys are read and stored separately. The CLI trims surrounding key white
 
 | CLI option | JSON field | Rule |
 | --- | --- | --- |
-| `--model` | `model` | Defaults to `gpt-image-2-count` |
+| `--model` | `model` | Defaults to `gpt-image-2.5-flare`; Sunburst and 2.0 can be selected explicitly |
 | `--prompt` | `prompt` | Required |
 | `--n` | `n` | `1..10`; `gpt-image-2-count` accepts only `1` |
 | `--size` | `size` | Defaults to `1024x1024` |
@@ -283,7 +283,7 @@ URL references use a top-level string array:
 
 ```json
 {
-  "model": "gpt-image-2-count",
+  "model": "gpt-image-2.5-flare",
   "prompt": "Convert this to a black-and-white pencil sketch",
   "n": 1,
   "size": "1024x1024",
@@ -296,7 +296,7 @@ Base64 references use an object array:
 
 ```json
 {
-  "model": "gpt-image-2-count",
+  "model": "gpt-image-2.5-flare",
   "prompt": "Convert this to a black-and-white pencil sketch",
   "n": 1,
   "size": "1024x1024",
@@ -323,7 +323,7 @@ Every async creation sends `Idempotency-Key`. The CLI generates a new value when
 
 ```json
 {
-  "model": "gpt-image-2-count",
+  "model": "gpt-image-2.5-flare",
   "operation": "generation",
   "input": {"prompt": "A city skyline at night"},
   "output": {
@@ -340,7 +340,7 @@ Optional output fields are `format`, `compression`, and `background`. `--client-
 
 ```json
 {
-  "model": "gpt-image-2-count",
+  "model": "gpt-image-2.5-flare",
   "operation": "edit",
   "input": {
     "prompt": "Convert this to a black-and-white pencil sketch",

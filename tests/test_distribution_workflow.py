@@ -22,6 +22,7 @@ REQUIRED_SKILL_FILES = (
     "scripts/supertoken_config.py",
     "scripts/supertoken_image.py",
     "references/gpt-image-2-api.md",
+    "references/model-selection.md",
 )
 VIDEO_SKILL_DIR = ROOT / "skills" / "supertoken-video-generation"
 VIDEO_REQUIRED_SKILL_FILES = (

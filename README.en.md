@@ -1,12 +1,13 @@
 # SuperToken Skills
 
-SuperToken Agent Skills provides GPT Image 2 image generation and editing, plus Adobe and Leonardo video generation, for Codex and Claude Code.
+SuperToken Agent Skills provides GPT Image 2 / 2.5 image generation and editing, plus Adobe and Leonardo video generation, for Codex and Claude Code.
 
 [中文](README.md)
 
 ## Table of Contents
 
 - [Quick start](#quick-start)
+- [Image model selection](#image-model-selection)
 - [Common commands](#common-commands)
 - [Video generation](#video-generation)
 - [Notes](#notes)
@@ -49,6 +50,25 @@ SuperToken Agent Skills provides GPT Image 2 image generation and editing, plus 
      --prompt "A tiny kitten sitting in sunlight" \
      --output ./supertoken-kitten.png
    ```
+
+## Image model selection
+
+| Model | Use case |
+| --- | --- |
+| `gpt-image-2.5-flare` (default) | Everyday images, drafts, and fast iteration |
+| `gpt-image-2.5-sunburst` | Product visuals, detailed materials, and precise edits where quality matters more than latency |
+| `gpt-image-2` | Existing 2.0 workflows or an explicit request for the earlier model |
+
+Pass `--model` to switch. For a Sunburst final image:
+
+```bash
+python3 scripts/supertoken_image.py generate \
+  --model gpt-image-2.5-sunburst --quality high \
+  --prompt "Product photograph of a blue ceramic teapot, detailed glaze and linen texture" \
+  --output ./product.png
+```
+
+Run `models` below to check access before the first call. See [model selection](skills/supertoken-gpt-image-2/references/model-selection.md) for sources and channel limits. Latency depends on scene complexity, quality settings, and queue load.
 
 ## Common commands
 
@@ -138,7 +158,7 @@ Video uses `SUPERTOKEN_API_KEY` (model Token, `sk-...`) for model discovery and 
 
 - Video `SUPERTOKEN_API_KEY` is the model Token (`sk-...`) for model listing and task creation.
 - Video `SUPERTOKEN_RESOURCE_API_KEY` is the resource Key (`ak_...`) for local media uploads, task queries, waits, and protected result downloads.
-- `gpt-image-2-count` is the default; use `gpt-image-2` for `n > 1` or full Images API parameters.
+- Image generation defaults to `gpt-image-2.5-flare`; legacy `gpt-image-2-count` and Adobe aliases require confirmed account access and an explicit choice.
 - Creation POST requests do not retry automatically. Webhook receiving and asynchronous Base64 editing are unsupported.
 
 Before using video `task` or `wait`, enter the resource Key without echoing it in Bash or zsh:

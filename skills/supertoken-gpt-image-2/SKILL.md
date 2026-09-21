@@ -1,9 +1,9 @@
 ---
 name: supertoken-gpt-image-2
-description: Use when generating, editing, saving, querying, or waiting for GPT-Image-2 images and asynchronous tasks through SuperToken, including model access and credentials.
+description: Generate and edit images through SuperToken using GPT Image 2 or 2.5 Flare/Sunburst, save results, and query asynchronous image tasks.
 ---
 
-# SuperToken GPT Image 2
+# SuperToken GPT Image 2 / 2.5
 
 通过 SuperToken 生成或编辑图片，并保存接口返回的每一张图片。默认使用新版同步接口；用户明确需要后台任务、任务 ID 或较长处理时间时，再使用异步任务。
 
@@ -23,8 +23,17 @@ macOS 和 Linux 使用 `python3`，Windows 使用 `py -3`。先定位此 `SKILL.
 - `SUPERTOKEN_API_KEY` 保存模型 API Token（`sk-...`），用于 `models`、同步请求和异步创建。
 - `SUPERTOKEN_RESOURCE_API_KEY` 保存资源 API Key（`ak_...`），只用于 `task`、`wait` 和异步轮询。两种 Key 不能混用。
 - 本版不读取 Webhook Key，也不运行 Webhook 接收服务。
-- 默认模型是 `gpt-image-2-count`。当 `n > 1` 或请求依赖官方 Images API 的完整参数时，使用 `gpt-image-2`。
-- 只有用户明确指定，或 `models` 已确认账号可用时，才使用 `adobe-gpt-image-2-count`。不要假定账号拥有该模型。
+- 默认模型是 `gpt-image-2.5-flare`。首次调用先用 `models` 确认当前 Token 权限，用户指定的模型优先。
+
+| 模型 ID | 选择场景 |
+| --- | --- |
+| `gpt-image-2.5-flare` | 默认；速度优先的日常配图、草稿和多轮方案迭代 |
+| `gpt-image-2.5-sunburst` | 质量优先的产品主图、复杂材质、精细局部编辑；接受更长等待时间 |
+| `gpt-image-2` | 用户指定 2.0、复现已有流程或对照旧版结果 |
+
+需要最高画质、严格保留细节或交付成品时，说明选择 Sunburst 并显式传 `--model gpt-image-2.5-sunburst`。模型选择与 `--quality` 是两个独立设置；快速试图可用默认 `low`，正式成品可显式选 `--quality high`。尊重用户的模型和质量设置，不因错误自动切换模型或重发 POST。
+
+三个主要模型各自使用完整 ID；Adobe 和旧 `-count` 名称仅在用户指定且 `models` 确认可用时使用。多图、编辑及异步任务的支持以当前渠道为准，不从模型列表推断所有参数都兼容。使用场景依据与渠道边界见 [模型选择说明](references/model-selection.md)。
 
 安全配置模型 Token：
 
@@ -52,7 +61,7 @@ python3 scripts/supertoken_image.py generate \
   --output ./supertoken-kitten.png
 ```
 
-生成多张图片时改用 `gpt-image-2`：
+用户选择 2.0 生成多张图片时：
 
 ```bash
 python3 scripts/supertoken_image.py generate \
@@ -144,8 +153,17 @@ Use `python3` on macOS and Linux or `py -3` on Windows. Resolve the directory co
 - `SUPERTOKEN_API_KEY` holds the model API Token (`sk-...`) for `models`, synchronous requests, and asynchronous creation.
 - `SUPERTOKEN_RESOURCE_API_KEY` holds the resource API Key (`ak_...`) only for `task`, `wait`, and polling. Do not swap the two keys.
 - This version does not read a Webhook Key or run a Webhook receiver.
-- The default model is `gpt-image-2-count`. Use `gpt-image-2` when `n > 1` or the request depends on the full official Images API parameters.
-- Use `adobe-gpt-image-2-count` only when the user explicitly selects it or `models` confirms access. Do not assume entitlement.
+- The default is `gpt-image-2.5-flare`. Check account access with `models` before the first call; honor an explicit model choice.
+
+| Model ID | Use case |
+| --- | --- |
+| `gpt-image-2.5-flare` | Default for everyday images, drafts, and fast iteration |
+| `gpt-image-2.5-sunburst` | Quality-first product visuals, detailed materials, and precise edits when a longer wait is acceptable |
+| `gpt-image-2` | Explicit 2.0 requests, established workflows, or comparison with previous results |
+
+For highest-quality output, detail preservation, or final artwork, state the Sunburst choice and pass `--model gpt-image-2.5-sunburst`. Model and `--quality` are separate controls: use the default `low` for quick trials or explicitly choose `--quality high` for final work. Honor user settings; errors do not authorize automatic model switching or POST resubmission.
+
+Use exact model IDs. Adobe and legacy `-count` aliases require an explicit user choice and confirmed account access. Multi-image, editing, and async support depend on the channel; listing a model does not prove every parameter is supported. See [model selection](references/model-selection.md) for sources and channel limits.
 
 Configure the model Token securely:
 
@@ -173,7 +191,7 @@ python3 scripts/supertoken_image.py generate \
   --output ./supertoken-kitten.png
 ```
 
-Use `gpt-image-2` for multiple images:
+Generate multiple images when the user selects 2.0:
 
 ```bash
 python3 scripts/supertoken_image.py generate \

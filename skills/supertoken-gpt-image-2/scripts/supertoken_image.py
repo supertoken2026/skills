@@ -59,7 +59,10 @@ def add_image_options(parser, include_images=False):
     parser.add_argument("--api-key")
     parser.add_argument("--resource-api-key")
     parser.add_argument("--base-url")
-    parser.add_argument("--model")
+    parser.add_argument(
+        "--model",
+        help=f"模型 ID；默认 {DEFAULT_MODEL}。可选 gpt-image-2 或 gpt-image-2.5-sunburst。",
+    )
     parser.add_argument("--n", dest="count", type=int, default=1)
     parser.add_argument("--size", default="1024x1024")
     parser.add_argument("--quality", default="low")
@@ -84,7 +87,7 @@ def add_image_options(parser, include_images=False):
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="使用 SuperToken GPT Image 2 图片服务。")
+    parser = argparse.ArgumentParser(description="使用 SuperToken GPT Image 2 / 2.5 图片服务。")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     models = subparsers.add_parser("models", help="列出可用模型。")

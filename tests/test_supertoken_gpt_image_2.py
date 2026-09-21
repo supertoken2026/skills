@@ -34,7 +34,7 @@ class SupertokenConfigTests(unittest.TestCase):
             {
                 "version": 2,
                 "base_url": "https://api.supertoken.cc",
-                "model": "gpt-image-2-count",
+                "model": "gpt-image-2.5-flare",
             },
         )
 
@@ -321,7 +321,7 @@ class SupertokenConfigTests(unittest.TestCase):
             )
             with patch.dict(os.environ, {config.CONFIG_DIR_ENV: temp_dir}):
                 value = config.load_config()
-            self.assertEqual(value, config.build_config())
+            self.assertEqual(value, config.build_config(model="gpt-image-2-count"))
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), value)
             self.assertFalse(Path(f"{path}.part").exists())
 
@@ -770,7 +770,7 @@ class SupertokenSetupTests(unittest.TestCase):
             stdout.getvalue(),
             "配置已保存到：/portable/config.json\n"
             "模型 API Key 已保存到：macos-keychain\n"
-            "默认模型：gpt-image-2-count\n",
+            "默认模型：gpt-image-2.5-flare\n",
         )
         self.assertEqual(stderr.getvalue(), "")
         self.assertNotIn("test-key", stdout.getvalue())
